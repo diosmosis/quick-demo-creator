@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Quick Demo Creator
+GenericName=Demo Video Creator
+Comment=Turn a GitHub pull request into a scripted screencast demo of the feature
+# Exec and Icon are completed by assets/install-desktop.sh: this project's
+# absolute path is not the same everywhere the tree is mounted.
+Exec=@APP_DIR@/launch.sh
+Icon=@APP_DIR@/assets/icon.svg
+Terminal=false
+StartupNotify=true
+StartupWMClass=quick-demo-creator
+Categories=Development;AudioVideo;Video;
+Keywords=demo;screencast;video;pull request;puppeteer;

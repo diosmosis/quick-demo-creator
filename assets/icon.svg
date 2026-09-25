@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" rx="12" fill="#1b1c22"/>
+  <!-- the screen -->
+  <rect x="8" y="12" width="48" height="32" rx="3" fill="#262832" stroke="#5b8cff" stroke-width="2"/>
+  <!-- title overlay -->
+  <rect x="13" y="16" width="22" height="4" rx="2" fill="#e6e7ea" opacity="0.6"/>
+  <!-- play button -->
+  <path d="M28 23 L39 29 L28 35 Z" fill="#e6e7ea"/>
+  <!-- subtitle -->
+  <rect x="18" y="38" width="28" height="3" rx="1.5" fill="#d29922"/>
+  <!-- record dot + stand -->
+  <circle cx="50" cy="52" r="5" fill="#f85149"/>
+  <rect x="24" y="48" width="16" height="3" rx="1.5" fill="#9a9db0"/>
+</svg>
