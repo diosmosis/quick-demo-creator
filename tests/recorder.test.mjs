@@ -1,14 +1,40 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { envArgs, networkNotes } from '../src/main/recorder.js'
+import { fileURLToPath } from 'node:url'
+import { Recorder, envArgs, inputArgs, networkNotes } from '../src/main/recorder.js'
+import { DEFAULT_RECORDING_ENVIRONMENT } from '../src/main/defaults.js'
+import { fillTemplate } from '../src/main/text.js'
 
 const ROOTFUL = { rootless: false, desktop: false }
+
+test('test_demoKitReference_should_give_the_default_prompt_the_library_api', () => {
+  const recorder = new Recorder(fileURLToPath(new URL('../docker/recorder', import.meta.url)))
+  const prompt = fillTemplate(DEFAULT_RECORDING_ENVIRONMENT, { DEMO_API: recorder.demoKitReference() })
+  assert.ok(!prompt.includes('{DEMO_API}'))
+  assert.match(prompt, /import \{ record \} from 'demo-kit'/)
+})
 
 test('test_envArgs_should_pass_values_and_leave_blank_ones_unset', () => {
   assert.deepEqual(envArgs({ APP_URL: 'https://shop.ddev.site', PASSWORD: 'a b=c', EMPTY: ' ', 'BAD-NAME': 'x' }), [
     '-e', 'APP_URL=https://shop.ddev.site',
     '-e', 'PASSWORD=a b=c'
   ])
+})
+
+test('test_inputArgs_should_mount_each_file_read_only_in_the_input_directory', () => {
+  assert.deepEqual(
+    inputArgs([
+      { name: 'plugin.zip', path: '/home/me/plugin.zip' },
+      { name: 'a,b.csv', path: '/home/me/"odd",dir/a,b.csv' },
+      { name: '../escape', path: '/etc/passwd' },
+      { name: 'no-path.txt', path: '' }
+    ]),
+    [
+      '--mount', 'type=bind,source=/home/me/plugin.zip,target=/input/plugin.zip,readonly',
+      '--mount', 'type=bind,"source=/home/me/""odd"",dir/a,b.csv","target=/input/a,b.csv",readonly',
+      '--workdir', '/input'
+    ]
+  )
 })
 
 test('test_networkNotes_should_say_nothing_for_rootful_docker_on_the_host_network', () => {

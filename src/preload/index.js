@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 // Main answers { ok, value } / { ok: false, error, data }. That is passed on
 // as-is: an Error thrown here would lose `data` crossing the context bridge,
@@ -17,6 +17,10 @@ const api = {
   verifyToken: (token) => call('github:verifyToken', token),
   toolVersion: (path) => call('tools:version', { path }),
   selectFolder: () => call('dialog:selectFolder'),
+  selectFiles: () => call('dialog:selectFiles'),
+  // The path of a file dropped on the page. Synchronous and local, so it is
+  // not wrapped like the calls above.
+  pathForFile: (file) => webUtils.getPathForFile(file),
   openPath: (path) => call('shell:openPath', path),
 
   // stages
@@ -24,6 +28,9 @@ const api = {
   generate: (script, prUrl) => call('generate:start', { script, prUrl }),
   checkSafety: (code) => call('safety:check', { code }),
   scriptEnv: (code) => call('script:env', { code }),
+  scriptFiles: (code) => call('script:files', { code }),
+  getProjectFiles: (prUrl) => call('projectFiles:get', prUrl),
+  setProjectFiles: (prUrl, files) => call('projectFiles:set', { prUrl, files }),
   getProjectEnv: (prUrl) => call('projectEnv:get', prUrl),
   setProjectEnv: (prUrl, values) => call('projectEnv:set', { prUrl, values }),
   record: (args) => call('record:start', args),

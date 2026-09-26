@@ -3,6 +3,9 @@ import LogView, { appendLog } from './components/LogView'
 import Settings from './components/Settings'
 import Markdown from './components/Markdown'
 import CodeEditor from './components/CodeEditor'
+import InputFiles from './components/InputFiles'
+import EnvFields from './components/EnvFields'
+import SafetyCheck, { findingKey } from './components/SafetyCheck'
 import { api } from './api'
 
 const STAGES = [
@@ -33,10 +36,15 @@ export default function App() {
   const [script, setScript] = useState('')
   const [code, setCode] = useState('')
   const [safety, setSafety] = useState(null)
-  const [overrideSafety, setOverrideSafety] = useState(false)
+  // Safety findings the user has dismissed, by findingKey().
+  const [dismissed, setDismissed] = useState(() => new Set())
+  const [sideTab, setSideTab] = useState('env')
   // The script's environment variables and this repository's values for them.
   const [envVars, setEnvVars] = useState([])
   const [projectEnv, setProjectEnv] = useState({ project: '', values: {} })
+  // The /input files the script names, and the files added for this repository.
+  const [requiredFiles, setRequiredFiles] = useState([])
+  const [projectFiles, setProjectFiles] = useState([])
   const [loaded, setLoaded] = useState(false)
 
   const [running, setRunning] = useState({})
@@ -60,11 +68,20 @@ export default function App() {
       setView(s.code ? 'generate' : 'plan')
       setLoaded(true)
     })
-    return api.onJobEvent(({ stage, ...event }) => {
+    // A file dropped outside a drop target would otherwise replace the page.
+    const ignoreDrop = (e) => e.preventDefault()
+    window.addEventListener('dragover', ignoreDrop)
+    window.addEventListener('drop', ignoreDrop)
+    const unsubscribe = api.onJobEvent(({ stage, ...event }) => {
       // Image rebuilds from Settings show up in the recording log.
       const target = stage === 'image' ? 'record' : stage
       setLogs((l) => ({ ...l, [target]: appendLog(l[target], event) }))
     })
+    return () => {
+      window.removeEventListener('dragover', ignoreDrop)
+      window.removeEventListener('drop', ignoreDrop)
+      unsubscribe()
+    }
   }, [])
 
   useEffect(() => {
@@ -83,19 +100,30 @@ export default function App() {
   }, [code])
 
   useEffect(() => {
-    const t = setTimeout(() => api.scriptEnv(code).then(setEnvVars), 300)
+    const t = setTimeout(() => {
+      api.scriptEnv(code).then(setEnvVars)
+      api.scriptFiles(code).then(setRequiredFiles)
+    }, 300)
     return () => clearTimeout(t)
   }, [code])
 
   useEffect(() => {
     if (!loaded) return
-    const t = setTimeout(() => api.getProjectEnv(prUrl).then(setProjectEnv), 300)
+    const t = setTimeout(() => {
+      api.getProjectEnv(prUrl).then(setProjectEnv)
+      api.getProjectFiles(prUrl).then(setProjectFiles)
+    }, 300)
     return () => clearTimeout(t)
   }, [loaded, prUrl])
 
   const setEnvValue = (name, value) => {
     setProjectEnv((p) => ({ ...p, values: { ...p.values, [name]: value } }))
     api.setProjectEnv(prUrl, { [name]: value })
+  }
+
+  const changeFiles = (files) => {
+    setProjectFiles(files)
+    api.setProjectFiles(prUrl, files)
   }
 
   const anyRunning = Object.values(running).some(Boolean)
@@ -140,13 +168,13 @@ export default function App() {
       edited.current = false
       setCode(res.code)
       setSafety(res.safety)
-      setOverrideSafety(false)
+      setDismissed(new Set())
     })
 
   const record = () =>
     runStage('record', async () => {
       setRecording(null)
-      setRecording(await api.record({ code, script, prUrl, overrideSafety, env: projectEnv.values }))
+      setRecording(await api.record({ code, script, prUrl, overrideSafety: !blocked, env: projectEnv.values, files: projectFiles }))
     })
 
   const rebuildImage = () => {
@@ -162,7 +190,11 @@ export default function App() {
     setConfig((c) => ({ ...c, settings }))
   }
 
-  const blocked = safety && !safety.ok && !overrideSafety
+  const findings = (safety?.findings || []).map((f) => ({ ...f, key: findingKey(f, code) }))
+  const openFindings = findings.filter((f) => !dismissed.has(f.key))
+  // Recording waits until every danger finding has been dismissed as reviewed.
+  const blocked = openFindings.some((f) => f.severity === 'danger')
+  const missingFiles = requiredFiles.filter((n) => !projectFiles.some((f) => f.name === n && f.exists)).length
 
   const stageState = (key) => {
     if (running[key]) return 'running'
@@ -204,6 +236,8 @@ export default function App() {
       </button>
     )
 
+  // Every stage stays rendered and the others are only hidden, so switching
+  // keeps where each one was scrolled to, and the script editor's undo history.
   return (
     <div className="app">
       <header className="topbar">
@@ -221,192 +255,161 @@ export default function App() {
         </button>
       </header>
 
-      {view === 'plan' && (
-        <main className="stage">
-          <div className="stage-toolbar">
-            <input
-              type="text"
-              className="pr-input"
-              placeholder="https://github.com/owner/repo/pull/123"
-              value={prUrl}
-              onChange={(e) => setPrUrl(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && prUrl.trim() && !anyRunning && plan()}
-            />
-            <button className="btn" onClick={plan} disabled={!prUrl.trim() || anyRunning}>
-              {running.plan ? 'Planning…' : 'Plan'}
-            </button>
-            {cancelButton('plan')}
+      <main className="stage" hidden={view !== 'plan'}>
+        <div className="stage-toolbar">
+          <input
+            type="text"
+            className="pr-input"
+            placeholder="https://github.com/owner/repo/pull/123"
+            value={prUrl}
+            onChange={(e) => setPrUrl(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && prUrl.trim() && !anyRunning && plan()}
+          />
+          <button className="btn" onClick={plan} disabled={!prUrl.trim() || anyRunning}>
+            {running.plan ? 'Planning…' : 'Plan'}
+          </button>
+          {cancelButton('plan')}
+        </div>
+        {(prTitle || logs.plan.length > 0) && (
+          <div className="pr-title">
+            <span>{prTitle}</span>
+            {logToggle('plan')}
           </div>
-          {(prTitle || logs.plan.length > 0) && (
-            <div className="pr-title">
-              <span>{prTitle}</span>
-              {logToggle('plan')}
+        )}
+        {errors.plan && <div className="banner error">{errors.plan}</div>}
+        {logVisible('plan') ? (
+          claudePane('plan', "Claude's output streams here while it plans the video.")
+        ) : (
+          <>
+            <div className="split even">
+              <div className="pane">
+                <div className="pane-title">
+                  Video script <span className="muted">— edit it to suit, then generate the Puppeteer script</span>
+                </div>
+                <textarea
+                  className="editor"
+                  value={script}
+                  onChange={(e) => setScript(e.target.value)}
+                  placeholder="The planned script appears here. Add anything Claude can't know, such as the URL the app runs at and how to log in."
+                  spellCheck
+                />
+              </div>
+              <div className="pane">
+                <div className="pane-title">Preview</div>
+                <Markdown text={script} placeholder="The rendered script appears here." />
+              </div>
             </div>
-          )}
-          {errors.plan && <div className="banner error">{errors.plan}</div>}
-          {logVisible('plan') ? (
-            claudePane('plan', "Claude's output streams here while it plans the video.")
-          ) : (
-            <>
-              <div className="split even">
-                <div className="pane">
-                  <div className="pane-title">
-                    Video script <span className="muted">— edit it to suit, then generate the Puppeteer script</span>
-                  </div>
-                  <textarea
-                    className="editor"
-                    value={script}
-                    onChange={(e) => setScript(e.target.value)}
-                    placeholder="The planned script appears here. Add anything Claude can't know, such as the URL the app runs at and how to log in."
-                    spellCheck
-                  />
-                </div>
-                <div className="pane">
-                  <div className="pane-title">Preview</div>
-                  <Markdown text={script} placeholder="The rendered script appears here." />
-                </div>
-              </div>
-              <div className="pane-actions">
-                <button className="btn" onClick={generate} disabled={!script.trim() || anyRunning}>
-                  Generate Puppeteer script →
-                </button>
-              </div>
-            </>
-          )}
-        </main>
-      )}
+            <div className="pane-actions">
+              <button className="btn" onClick={generate} disabled={!script.trim() || anyRunning}>
+                Generate Puppeteer script →
+              </button>
+            </div>
+          </>
+        )}
+      </main>
 
-      {view === 'generate' && (
-        <main className="stage">
-          <div className="stage-toolbar">
-            <div className="stage-heading">Puppeteer script {running.generate && <span className="muted">— generating…</span>}</div>
-            {logToggle('generate')}
-            {cancelButton('generate')}
-          </div>
-          {errors.generate && <div className="banner error">{errors.generate}</div>}
-          {logVisible('generate') ? (
-            claudePane('generate', "Claude's output streams here while it writes the script.")
-          ) : (
+      <main className="stage" hidden={view !== 'generate'}>
+        <div className="stage-toolbar">
+          <div className="stage-heading">Puppeteer script {running.generate && <span className="muted">— generating…</span>}</div>
+          {logToggle('generate')}
+          {cancelButton('generate')}
+        </div>
+        {errors.generate && <div className="banner error">{errors.generate}</div>}
+        {logVisible('generate') ? (
+          claudePane('generate', "Claude's output streams here while it writes the script.")
+        ) : (
+          <div className="script-layout">
             <div className="pane">
               <div className="pane-title">
                 Generated script <span className="muted">— give it a once-over before recording</span>
+                {findings.length > openFindings.length && (
+                  <button className="link-btn" onClick={() => setDismissed(new Set())}>
+                    Show {findings.length - openFindings.length} dismissed safety{' '}
+                    {findings.length - openFindings.length > 1 ? 'notes' : 'note'}
+                  </button>
+                )}
               </div>
               <CodeEditor
                 ref={codeEditor}
                 value={code}
-                onChange={(e) => {
+                onChange={(text) => {
                   edited.current = true
-                  setCode(e.target.value)
+                  setCode(text)
                 }}
                 placeholder="The generated Puppeteer script appears here."
               />
-              {safety && (
-                <div className={`safety ${safety.ok ? (safety.findings.length ? 'warn' : 'ok') : 'danger'}`}>
-                  <div className="safety-title">
-                    {safety.ok
-                      ? safety.findings.length
-                        ? 'Safety check: nothing dangerous found, but note:'
-                        : 'Safety check: nothing suspicious found.'
-                      : 'Safety check: this script does things a recording script should not.'}
-                  </div>
-                  {safety.findings.length > 0 && (
-                    <ul>
-                      {safety.findings.map((f, i) => (
-                        <li key={i} className={f.severity}>
-                          {f.line ? (
-                            <button className="line" title="Show this line" onClick={() => codeEditor.current?.goToLine(f.line)}>
-                              line {f.line}
-                            </button>
-                          ) : null}{' '}
-                          {f.message}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {!safety.ok && (
-                    <label className="checkbox">
-                      <input type="checkbox" checked={overrideSafety} onChange={(e) => setOverrideSafety(e.target.checked)} />
-                      I've reviewed these and want to record anyway
-                    </label>
-                  )}
-                </div>
+              <SafetyCheck
+                findings={openFindings}
+                onDismiss={(key) => setDismissed((d) => new Set(d).add(key))}
+                onGoToLine={(line) => codeEditor.current?.goToLine(line)}
+              />
+            </div>
+            <aside className="side">
+              <div className="tabs">
+                <button className={`tab ${sideTab === 'env' ? 'active' : ''}`} onClick={() => setSideTab('env')}>
+                  Environment <span className="count">{envVars.length}</span>
+                </button>
+                <button className={`tab ${sideTab === 'files' ? 'active' : ''}`} onClick={() => setSideTab('files')}>
+                  Files <span className={`count ${missingFiles ? 'warn' : ''}`}>{missingFiles ? `${missingFiles} missing` : projectFiles.length}</span>
+                </button>
+              </div>
+              {sideTab === 'env' ? (
+                <EnvFields vars={envVars} values={projectEnv.values} project={projectEnv.project} onChange={setEnvValue} />
+              ) : (
+                <InputFiles required={requiredFiles} files={projectFiles} onChange={changeFiles} />
               )}
-              {envVars.length > 0 && (
-                <div className="env">
-                  <div className="env-title">
-                    Environment{' '}
-                    <span className="muted">
-                      — passed to the recorder; leave a field blank for the script's default
-                      {projectEnv.project && `. Remembered for ${projectEnv.project}.`}
-                    </span>
-                  </div>
-                  {envVars.map((v) => (
-                    <label key={v.name} className="env-row">
-                      <code>{v.name}</code>
-                      <input
-                        type="text"
-                        value={projectEnv.values[v.name] ?? ''}
-                        placeholder={v.fallback || '(no default)'}
-                        onChange={(e) => setEnvValue(v.name, e.target.value)}
-                        spellCheck={false}
-                      />
-                    </label>
-                  ))}
-                </div>
-              )}
-              <div className="pane-actions">
+              <div className="side-actions">
+                {blocked && <p className="hint">Dismiss the safety check's red findings once you've reviewed them.</p>}
                 <button className="btn" onClick={record} disabled={!code.trim() || anyRunning || blocked}>
                   Record screencast →
                 </button>
               </div>
-            </div>
-          )}
-        </main>
-      )}
+            </aside>
+          </div>
+        )}
+      </main>
 
-      {view === 'record' && (
-        <main className="stage">
-          <div className="stage-toolbar">
-            <div className="stage-heading">
-              Recording
-              {!running.record && recording && !recording.failed && <span className="muted"> — finished</span>}
-              {elapsed('record')}
-            </div>
-            {cancelButton('record')}
-            {!running.record && code && (
-              <button className="btn secondary" onClick={record} disabled={anyRunning || blocked}>
-                Record again
+      <main className="stage" hidden={view !== 'record'}>
+        <div className="stage-toolbar">
+          <div className="stage-heading">
+            Recording
+            {!running.record && recording && !recording.failed && <span className="muted"> — finished</span>}
+            {elapsed('record')}
+          </div>
+          {cancelButton('record')}
+          {!running.record && code && (
+            <button className="btn secondary" onClick={record} disabled={anyRunning || blocked}>
+              Record again
+            </button>
+          )}
+        </div>
+        {errors.record && <div className="banner error">{errors.record}</div>}
+        {recording && (
+          <div className="result">
+            <div className="result-path">
+              <span className="muted">Saved to</span> <code>{recording.runDir}</code>
+              <button className="btn secondary" onClick={() => api.openPath(recording.runDir)}>
+                Open folder
               </button>
+            </div>
+            {recording.files?.length > 0 ? (
+              <ul className="files">
+                {recording.files.map((f) => (
+                  <li key={f.name}>
+                    {f.name} <span className="muted">{formatSize(f.size)}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="muted">The script didn't produce any files.</div>
             )}
           </div>
-          {errors.record && <div className="banner error">{errors.record}</div>}
-          {recording && (
-            <div className="result">
-              <div className="result-path">
-                <span className="muted">Saved to</span> <code>{recording.runDir}</code>
-                <button className="btn secondary" onClick={() => api.openPath(recording.runDir)}>
-                  Open folder
-                </button>
-              </div>
-              {recording.files?.length > 0 ? (
-                <ul className="files">
-                  {recording.files.map((f) => (
-                    <li key={f.name}>
-                      {f.name} <span className="muted">{formatSize(f.size)}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="muted">The script didn't produce any files.</div>
-              )}
-            </div>
-          )}
-          <LogView
-            entries={logs.record}
-            placeholder="The recorder's output streams here. The first recording also builds the recorder image, which takes a few minutes."
-          />
-        </main>
-      )}
+        )}
+        <LogView
+          entries={logs.record}
+          placeholder="The recorder's output streams here. The first recording also builds the recorder image, which takes a few minutes."
+        />
+      </main>
 
       {showSettings && config && (
         <Settings

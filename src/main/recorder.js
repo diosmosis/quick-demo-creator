@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { splitArgs, scriptExtension } from './text.js'
 import { ENV_NAME } from './script-env.js'
+import { INPUT_DIR, isInputName } from './script-files.js'
 import { SHELL_NOISE, isNotFound, killTree, notFoundMessage, spawnInShell } from './shell.js'
 
 const HASH_LABEL = 'quick-demo-creator.context-hash'
@@ -58,6 +59,12 @@ export class Recorder {
     this.cancelled = false
   }
 
+  // The API reference of the demo-kit library the image installs, for the
+  // stage 2 prompt.
+  demoKitReference() {
+    return fs.readFileSync(path.join(this.contextDir, 'demo-kit.md'), 'utf8')
+  }
+
   async imageIsCurrent(settings) {
     const { code, output } = await run(settings.dockerPath, [
       'image', 'inspect', '--format', `{{ index .Config.Labels "${HASH_LABEL}" }}`, settings.dockerImage
@@ -106,8 +113,9 @@ export class Recorder {
 
   // Records `code` into a new folder under settings.outputDir. Resolves with
   // the folder and the files the run produced. `env` is passed into the
-  // container; `targets` are the URLs the script will visit, for the notes.
-  async record({ settings, code, script, name, env = {}, targets = [], onEvent }) {
+  // container; `files` ([{ name, path }]) are mounted read-only in /input;
+  // `targets` are the URLs the script will visit, for the notes.
+  async record({ settings, code, script, name, env = {}, files = [], targets = [], onEvent }) {
     this.cancelled = false
     await this.ensureImage(settings, onEvent)
     if (this.cancelled) throw new Error('Cancelled.')
@@ -133,6 +141,7 @@ export class Recorder {
       '--security-opt=no-new-privileges',
       ...this.userArgs(docker),
       ...envArgs(env),
+      ...inputArgs(files),
       '-e', `CONVERT_MP4=${settings.convertToMp4 ? 1 : 0}`,
       '-v', `${runDir}:/output`,
       '-v', `${scriptPath}:/app/${scriptName}:ro`,
@@ -149,16 +158,16 @@ export class Recorder {
     this.child = null
     this.container = null
 
-    const files = fs
+    const produced = fs
       .readdirSync(runDir)
       .filter((f) => !before.has(f))
       .map((f) => ({ name: f, size: fs.statSync(path.join(runDir, f)).size }))
 
-    if (this.cancelled) throw Object.assign(new Error('Cancelled.'), { runDir, files })
+    if (this.cancelled) throw Object.assign(new Error('Cancelled.'), { runDir, files: produced })
     if (exit !== 0) {
-      throw Object.assign(new Error(`The script exited with code ${exit}. See the log above.`), { runDir, files })
+      throw Object.assign(new Error(`The script exited with code ${exit}. See the log above.`), { runDir, files: produced })
     }
-    return { runDir, files }
+    return { runDir, files: produced }
   }
 
   cancel(settings) {
@@ -175,6 +184,18 @@ export function envArgs(env) {
   return Object.entries(env)
     .filter(([name, value]) => ENV_NAME.test(name) && String(value ?? '').trim() !== '')
     .flatMap(([name, value]) => ['-e', `${name}=${value}`])
+}
+
+// A read-only bind mount at /input/<name> for each file, and /input as the
+// working directory so the script can also use relative paths. --mount rather
+// than -v, which can't take a path containing a colon; its value is CSV, so
+// fields are quoted.
+export function inputArgs(files) {
+  const csv = (field) => (/[",]/.test(field) ? `"${field.replace(/"/g, '""')}"` : field)
+  const mounts = files
+    .filter((f) => isInputName(f.name) && f.path)
+    .flatMap((f) => ['--mount', ['type=bind', `source=${f.path}`, `target=${INPUT_DIR}/${f.name}`, 'readonly'].map(csv).join(',')])
+  return [...mounts, '--workdir', INPUT_DIR]
 }
 
 // Warnings about URLs on this machine that the container won't reach.

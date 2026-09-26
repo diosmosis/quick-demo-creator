@@ -22,6 +22,13 @@ RUN echo '{"name":"recorder","private":true}' > package.json \
  && rm -rf /var/lib/apt/lists/* \
  && chmod -R a+rX /opt/puppeteer /app
 
+# demo-kit, the library the generated scripts are written against. After the
+# npm install, so editing it doesn't reinstall Puppeteer.
+COPY demo-kit.js /app/node_modules/demo-kit/index.js
+RUN echo '{"name":"demo-kit","private":true,"type":"module","exports":"./index.js"}' \
+      > /app/node_modules/demo-kit/package.json \
+ && chmod -R a+rX /app/node_modules/demo-kit
+
 COPY run.sh /usr/local/bin/run-demo
 RUN chmod 755 /usr/local/bin/run-demo
 

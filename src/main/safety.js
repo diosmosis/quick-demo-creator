@@ -12,7 +12,11 @@ import * as walk from 'acorn-walk'
 
 export const OUTPUT_DIR = '/output'
 
+// The recorder image's own library for demo scripts.
+export const DEMO_KIT = 'demo-kit'
+
 const ALLOWED_MODULES = new Set([
+  DEMO_KIT,
   'puppeteer',
   'puppeteer-core',
   'fs',
@@ -224,6 +228,19 @@ export function checkScript(code) {
   }
 
   let screencasts = 0
+  // demo-kit's record() does the screencast: the names it's imported as, and
+  // namespace imports of the whole library.
+  const recordNames = new Set()
+  const kitNamespaces = new Set()
+  walk.simple(ast, {
+    ImportDeclaration(node) {
+      if (node.source.value !== DEMO_KIT) return
+      for (const spec of node.specifiers) {
+        if (spec.type === 'ImportSpecifier' && (spec.imported.name ?? spec.imported.value) === 'record') recordNames.add(spec.local.name)
+        else if (spec.type !== 'ImportSpecifier') kitNamespaces.add(spec.local.name)
+      }
+    }
+  })
 
   walk.fullAncestor(ast, (node, _state, ancestors) => {
     const line = node.loc?.start.line
@@ -254,6 +271,12 @@ export function checkScript(code) {
 
       case 'CallExpression': {
         const callee = node.callee
+        if (
+          (callee.type === 'Identifier' && recordNames.has(callee.name)) ||
+          (callee.type === 'MemberExpression' && kitNamespaces.has(callee.object.name) && callee.property.name === 'record')
+        ) {
+          screencasts++
+        }
         if (callee.type === 'Identifier') {
           if (callee.name === 'require' && !inBrowser) {
             const arg = node.arguments[0]
@@ -317,7 +340,7 @@ export function checkScript(code) {
   if (longLine !== -1) add('warning', 'Has a line over 1000 characters long; minified code is hard to review.', longLine + 1)
 
   if (!screencasts) {
-    add('warning', "Never calls page.screencast(), so it probably won't produce a video.")
+    add('warning', "Never calls demo-kit's record() or page.screencast(), so it probably won't produce a video.")
   }
 
   findings.sort((a, b) => (a.severity === b.severity ? (a.line ?? 1e9) - (b.line ?? 1e9) : a.severity === 'danger' ? -1 : 1))

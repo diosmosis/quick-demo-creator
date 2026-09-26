@@ -8,6 +8,9 @@ const unwrap =
     throw Object.assign(new Error(res.error), { data: res.data })
   }
 
+// Not IPC calls, so there is no { ok, value } to unwrap.
+const UNWRAPPED = new Set(['onJobEvent', 'pathForFile'])
+
 export const api = Object.fromEntries(
-  Object.entries(window.api).map(([name, fn]) => [name, name === 'onJobEvent' ? fn : unwrap(fn)])
+  Object.entries(window.api).map(([name, fn]) => [name, UNWRAPPED.has(name) ? fn : unwrap(fn)])
 )

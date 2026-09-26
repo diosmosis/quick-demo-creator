@@ -22,15 +22,17 @@ export const DEFAULT_PLANNING_INSTRUCTIONS =
 
 // Appended to the recording prompt. Claude can't know how stage 3 runs the
 // script, so without this it guesses at paths, packages and browser flags.
-export const DEFAULT_RECORDING_ENVIRONMENT = `Requirements for the generated script (it is run automatically and unattended):
-- It runs with Node.js 22 inside a Docker container where the \`puppeteer\` package (v24) and a matching Chrome are installed. Use ES module syntax (\`import puppeteer from 'puppeteer'\`). Do not import any other packages; Node's built-in \`fs\`, \`path\` and \`timers/promises\` modules are available.
-- Launch the browser with \`headless: true\`, \`acceptInsecureCerts: true\`, \`args: ['--no-sandbox', '--disable-dev-shm-usage']\` and \`defaultViewport: { width: 1920, height: 1080 }\`. The app under test is usually a local development site (DDEV, say) whose certificate the container's Chrome doesn't trust.
-- Record with Puppeteer's built-in \`page.screencast({ path: '/output/demo.webm' })\` (ffmpeg is installed), and stop the recorder before closing the browser. \`/output\` is the only directory that is kept, so write everything there.
-- Install the title overlay and subtitle elements with \`page.evaluateOnNewDocument\` so they exist on every page, and update their text with \`page.evaluate\`. Make them fixed-position with a high z-index and \`pointer-events: none\` so they never block clicks.
-- Pace the video for a human viewer: pause long enough for each subtitle to be read (roughly one second per four words, at least two seconds), type with a visible delay, and pause briefly after each navigation.
-- Log progress with \`console.log\` (for example, the scene being recorded); the log is shown while recording.
+// {DEMO_API} becomes the reference of the recorder image's demo-kit library
+// (docker/recorder/demo-kit.md), so it always describes the installed version.
+export const DEFAULT_RECORDING_ENVIRONMENT = `{DEMO_API}
+
+Requirements for the generated script (it is run automatically and unattended):
+- It runs with Node.js 22 inside a Docker container. Use ES module syntax. Only the \`demo-kit\` and \`puppeteer\` (v24) packages and Node's built-in \`fs\`, \`path\` and \`timers/promises\` modules are available; do not import anything else.
+- Pace the video for a human viewer: give each subtitle time to be read (\`demo.say\` does), and pause to let the result of an important step be seen.
+- The recording log is shown while it runs, and demo-kit already logs every scene, action and page load; log anything else that helps follow a run, such as what the script is checking or waiting for, with \`demo.log\`.
 - Read the app's URL, credentials and anything else that differs between machines from environment variables, in clearly named constants at the top of the file, with the value from the video script as the default: \`const APP_URL = process.env.APP_URL || 'http://localhost:8080'\`. Use upper-case names and read each one as \`process.env.NAME\`; the user is shown a field for each variable read that way.
-- Close the browser and exit even when a step fails, so the recording is still saved.
+- Files the demo needs from the user (a plugin archive to upload, an image, a CSV to import) are mounted read-only in \`/input\`, which is also the working directory. Name each one by its full path in a constant at the top of the file, using a short descriptive file name: \`const PLUGIN_ZIP = '/input/my-plugin.zip'\`. Write every \`/input/...\` path as a plain string like that; the user is shown a slot for each one to add the file to. Don't create or download these files in the script.
+- Start the file with a block comment that says in a sentence what the demo shows, then lists under a \`Preconditions:\` heading everything that must already be true for the script to succeed and that it doesn't set up itself: the app running and reachable at its URL, the accounts it signs in with and the permissions they need, plugins, settings or feature flags that must be enabled, data that must already exist (and anything that must not exist yet, such as an item the demo creates), and each \`/input\` file with what it has to be. Say how to satisfy each one where the video script or the PR tells you. If there are none, say so.
 - Respond with the complete script in a single \`\`\`javascript code block. Do not write any files or run any commands.`
 
 export const DEFAULT_SETTINGS = {

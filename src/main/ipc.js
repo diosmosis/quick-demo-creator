@@ -8,6 +8,7 @@ import { parsePrUrl, fetchPr, formatPrContext, verifyToken } from './github.js'
 import { runClaude } from './claude.js'
 import { checkScript } from './safety.js'
 import { ENV_NAME, scriptEnvVars } from './script-env.js'
+import { isInputName, scriptInputFiles } from './script-files.js'
 import { Recorder } from './recorder.js'
 import { extractCode, fillTemplate } from './text.js'
 import { isNotFound, spawnInShell, withoutShellNoise } from './shell.js'
@@ -89,6 +90,20 @@ export function registerIpc(app, store) {
     store.set({ projectEnv: { ...all, [key]: merged } })
   })
 
+  // The files added for the scripts' /input, remembered per repository too:
+  // [{ name, path }], where `path` is on this machine. Read back with whether
+  // each still exists, since they are only referenced, not copied.
+  handle('projectFiles:get', (prUrl) =>
+    (store.get('projectFiles', {})[projectKey(prUrl)] || []).map((f) => ({ ...f, exists: fs.existsSync(f.path) }))
+  )
+  handle('projectFiles:set', ({ prUrl, files }) => {
+    const byName = new Map()
+    for (const f of files) {
+      if (isInputName(f.name) && path.isAbsolute(String(f.path || ''))) byName.set(f.name, { name: f.name, path: f.path })
+    }
+    store.set({ projectFiles: { ...store.get('projectFiles', {}), [projectKey(prUrl)]: [...byName.values()] } })
+  })
+
   // --- environment ------------------------------------------------------
   handle('github:verifyToken', (token) => verifyToken(token, net.fetch))
   handle('tools:version', ({ path: exe }) => {
@@ -110,6 +125,11 @@ export function registerIpc(app, store) {
     const win = BrowserWindow.fromWebContents(event.sender)
     const res = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
     return res.canceled ? null : res.filePaths[0]
+  })
+  handle('dialog:selectFiles', async (_arg, event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const res = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'] })
+    return res.canceled ? [] : res.filePaths
   })
   handle('shell:openPath', async (p) => {
     const err = await shell.openPath(p)
@@ -148,7 +168,9 @@ export function registerIpc(app, store) {
     if (!script.trim()) throw new Error('The script is empty.')
     const s = settings()
     let prompt = fillTemplate(s.recordingPrompt, { SCRIPT: script })
-    if (s.recordingEnvironment.trim()) prompt += '\n\n' + s.recordingEnvironment.trim()
+    if (s.recordingEnvironment.trim()) {
+      prompt += '\n\n' + fillTemplate(s.recordingEnvironment.trim(), { DEMO_API: recorder.demoKitReference().trim() })
+    }
 
     const answer = await askClaude('generate', event, prompt, parsePrUrl(prUrl))
     const code = extractCode(answer)
@@ -157,9 +179,10 @@ export function registerIpc(app, store) {
 
   handle('safety:check', ({ code }) => checkScript(code))
   handle('script:env', ({ code }) => scriptEnvVars(code))
+  handle('script:files', ({ code }) => scriptInputFiles(code))
 
   // --- stage 3: record --------------------------------------------------
-  handle('record:start', async ({ code, script, prUrl, overrideSafety, env = {} }, event) => {
+  handle('record:start', async ({ code, script, prUrl, overrideSafety, env = {}, files = [] }, event) => {
     // Checked again here so the renderer can't skip it.
     const safety = checkScript(code)
     if (!safety.ok && !overrideSafety) {
@@ -172,7 +195,16 @@ export function registerIpc(app, store) {
     const vars = scriptEnvVars(code)
     const values = Object.fromEntries(vars.map((v) => [v.name, String(env[v.name] ?? '')]))
     const targets = vars.map((v) => values[v.name].trim() || v.fallback)
-    const result = await recorder.record({ settings: s, code, script, name, env: values, targets, onEvent: emitter(event, 'record') })
+    const emit = emitter(event, 'record')
+    const present = files.filter((f) => isInputName(f.name) && fs.existsSync(String(f.path || '')))
+    for (const f of files) {
+      if (!present.includes(f)) emit({ type: 'stderr', text: `Leaving out ${f.name}: ${f.path} no longer exists.\n` })
+    }
+    const missing = scriptInputFiles(code).filter((n) => !present.some((f) => f.name === n))
+    if (missing.length) {
+      emit({ type: 'stderr', text: `The script reads ${missing.map((n) => `/input/${n}`).join(', ')}, but no file was added for ${missing.length > 1 ? 'them' : 'it'}.\n` })
+    }
+    const result = await recorder.record({ settings: s, code, script, name, env: values, files: present, targets, onEvent: emit })
     if (s.openFolderWhenDone) shell.openPath(result.runDir)
     return result
   })

@@ -21,9 +21,19 @@ export default function LogView({ entries, placeholder }) {
   const ref = useRef(null)
   const stick = useRef(true)
 
-  useEffect(() => {
+  const toBottom = () => {
     if (stick.current && ref.current) ref.current.scrollTop = ref.current.scrollHeight
-  }, [entries])
+  }
+
+  useEffect(toBottom, [entries])
+
+  // Output that arrived while the log's stage was hidden couldn't scroll it,
+  // so it catches up when it's shown again.
+  useEffect(() => {
+    const observer = new ResizeObserver(toBottom)
+    observer.observe(ref.current)
+    return () => observer.disconnect()
+  }, [])
 
   const onScroll = () => {
     const el = ref.current

@@ -10,9 +10,10 @@ export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
 // be configured.
 const PROVIDED = new Set(['HOME', 'PATH', 'PWD', 'HOSTNAME', 'CONVERT_MP4', 'PUPPETEER_CACHE_DIR', 'NODE_VERSION', 'YARN_VERSION'])
 
-// [{ name, fallback }] in order of first use. The fallback is the literal the
-// script uses when the variable is unset (after || or ??, or a destructuring
-// default), or '' when there is none.
+// [{ name, fallback, computed }] in order of first use. The fallback is the
+// literal the script uses when the variable is unset (after || or ??, or a
+// destructuring default), or '' when there is none. When the default is code
+// instead, such as `${APP_URL}/login`, computed is its source and fallback ''.
 export function scriptEnvVars(code) {
   let ast
   try {
@@ -21,26 +22,34 @@ export function scriptEnvVars(code) {
     return []
   }
   const found = new Map()
-  const add = (name, fallbackNode) => {
+  const add = (name, defaults) => {
     if (typeof name !== 'string' || !ENV_NAME.test(name) || PROVIDED.has(name)) return
-    const fallback = literal(fallbackNode) ?? ''
+    const fallback = (defaults.length === 1 && literal(defaults[0].node)) || ''
+    const computed = fallback || !defaults.length ? '' : defaults.map((d, i) => (i ? ` ${d.operator} ` : '') + source(code, d.node)).join('')
     const known = found.get(name)
-    if (!known) found.set(name, { name, fallback })
-    else if (!known.fallback) known.fallback = fallback
+    if (!known) found.set(name, { name, fallback, computed })
+    else if (!known.fallback && !known.computed) Object.assign(known, { fallback, computed })
   }
 
   walk.fullAncestor(ast, (node, _state, ancestors) => {
     if (!isProcessEnv(node)) return
     const parent = ancestors[ancestors.length - 2]
     if (parent?.type === 'MemberExpression' && parent.object === node) {
-      const grand = ancestors[ancestors.length - 3]
-      const defaulted = grand?.type === 'LogicalExpression' && grand.left === parent && ['||', '??'].includes(grand.operator)
-      add(parent.computed ? literal(parent.property) : parent.property.name, defaulted ? grand.right : null)
+      // Everything after it in `process.env.A || process.env.B || 'b'`.
+      const defaults = []
+      let read = parent
+      for (let i = ancestors.length - 3; i >= 0; i--) {
+        const up = ancestors[i]
+        if (up.type !== 'LogicalExpression' || up.left !== read || !['||', '??'].includes(up.operator)) break
+        defaults.push({ node: up.right, operator: up.operator })
+        read = up
+      }
+      add(parent.computed ? literal(parent.property) : parent.property.name, defaults)
     } else if (parent?.type === 'VariableDeclarator' && parent.init === node && parent.id.type === 'ObjectPattern') {
       for (const prop of parent.id.properties) {
         if (prop.type !== 'Property') continue
         const name = prop.computed ? literal(prop.key) : prop.key.name ?? prop.key.value
-        add(name, prop.value.type === 'AssignmentPattern' ? prop.value.right : null)
+        add(name, prop.value.type === 'AssignmentPattern' ? [{ node: prop.value.right }] : [])
       }
     }
   })
@@ -61,4 +70,9 @@ function literal(node) {
   if (node?.type === 'Literal' && ['string', 'number'].includes(typeof node.value)) return String(node.value)
   if (node?.type === 'TemplateLiteral' && node.expressions.length === 0) return node.quasis[0].value.cooked
   return undefined
+}
+
+// A default's code on one line, as a placeholder can only show one.
+function source(code, node) {
+  return code.slice(node.start, node.end).replace(/\s+/g, ' ')
 }

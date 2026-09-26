@@ -140,6 +140,10 @@ code {
   padding: 12px 14px;
   min-height: 0;
 }
+/* The stages that aren't shown (App.jsx keeps them all rendered). */
+.stage[hidden] {
+  display: none;
+}
 .stage-toolbar {
   display: flex;
   align-items: center;
@@ -358,19 +362,11 @@ code {
 .editor:focus {
   border-color: var(--accent);
 }
-.editor.code {
-  font-family: var(--mono);
-  font-size: 12px;
-  white-space: pre;
-  tab-size: 2;
-}
 
-/* The generated script, with line numbers. */
+/* The generated script: a CodeMirror editor (components/CodeEditor.jsx). */
 .code-editor {
   flex: 1;
   min-height: 0;
-  display: flex;
-  background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
@@ -378,25 +374,8 @@ code {
 .code-editor:focus-within {
   border-color: var(--accent);
 }
-.code-editor .editor {
-  border: none;
-  border-radius: 0;
-}
-.gutter {
-  /* Matches .editor.code's font, line height and top padding row for row;
-     the generous bottom padding lets it scroll as far as the textarea does.
-     It only ever follows the textarea, so the excess is never seen. */
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.5;
-  padding: 10px 8px 200px 12px;
-  white-space: pre;
-  text-align: right;
-  color: var(--muted);
-  border-right: 1px solid var(--border);
-  overflow: hidden;
-  user-select: none;
-  flex-shrink: 0;
+.code-editor .cm-editor.cm-focused {
+  outline: none;
 }
 
 /* ---- safety check ---------------------------------------------------- */
@@ -408,9 +387,7 @@ code {
   background: var(--panel);
   max-height: 30%;
   overflow: auto;
-}
-.safety.ok {
-  border-left-color: var(--green);
+  flex-shrink: 0;
 }
 .safety.warn {
   border-left-color: var(--amber);
@@ -422,8 +399,29 @@ code {
   font-weight: 600;
 }
 .safety ul {
-  margin: 6px 0;
-  padding-left: 18px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.safety li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
+}
+.safety-text {
+  flex: 1;
+}
+.safety .dismiss {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 12px;
+}
+.safety .dismiss:hover {
+  color: var(--text);
 }
 .safety li.danger {
   color: var(--red);
@@ -445,45 +443,153 @@ code {
   color: var(--text);
 }
 
-/* ---- script environment ---------------------------------------------- */
-.env {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 8px 12px;
-  background: var(--panel);
+/* ---- stage 2 sidebar: environment and files ------------------------- */
+.script-layout {
+  flex: 1;
   display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 6px 12px;
-  align-items: center;
-  /* Scrolls rather than squeezing the editor when a script reads many variables. */
-  max-height: 25%;
-  overflow: auto;
-  flex-shrink: 0;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 12px;
+  min-height: 0;
 }
-.env-title {
-  grid-column: 1 / -1;
-  font-weight: 600;
-  /* Stays in view while the fields scroll; the offset covers the box's padding. */
-  position: sticky;
-  top: -8px;
-  margin-top: -8px;
-  padding: 8px 0 4px;
-  background: var(--panel);
-  z-index: 1;
+.script-layout .pane-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
 }
-.env-title .muted {
+.script-layout .pane-title .link-btn {
+  margin-left: auto;
   font-weight: normal;
 }
-.env-row {
-  display: contents;
+.side {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  overflow: hidden;
 }
-.env-row code {
+.tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.tab {
+  flex: 1;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  padding: 9px 8px 7px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tab:hover {
+  color: var(--text);
+}
+.tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.tab .count {
+  margin-left: 4px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--bg-3);
+  font-size: 11px;
+  font-weight: normal;
+}
+.tab .count.warn {
+  background: rgba(210, 153, 34, 0.2);
+  color: var(--amber);
+}
+.side-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.side-body > p {
+  margin: 0;
+}
+.side-actions {
+  border-top: 1px solid var(--border);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.side-actions .hint {
+  margin: 0;
+}
+.env-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.env-field code,
+.env-field input {
   font-family: var(--mono);
   font-size: 12px;
 }
-.env-row input {
+
+/* The whole tab is a drop zone; each slot the script names is one too. */
+.files {
+  border: 1px dashed transparent;
+}
+.files.over {
+  border-color: var(--accent);
+  background: rgba(91, 140, 255, 0.06);
+}
+.files-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.files-row.over {
+  border-color: var(--accent);
+  background: rgba(91, 140, 255, 0.15);
+}
+.files-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.files-head code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-family: var(--mono);
   font-size: 12px;
+}
+.files-path {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-path.missing {
+  color: var(--amber);
+  font-family: inherit;
+  white-space: normal;
+}
+.files-actions {
+  display: flex;
+  gap: 10px;
+}
+.files-add {
+  align-self: flex-start;
 }
 
 /* ---- recording result ------------------------------------------------ */

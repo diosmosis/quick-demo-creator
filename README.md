@@ -16,12 +16,18 @@ browser recording.
    the right. _Show Claude's output_ brings the log back. Add anything Claude can't know, such as the URL
    the app runs at and how to log in.
 2. **Puppeteer script.** Click _Generate Puppeteer script_. Claude turns the
-   edited script into a Puppeteer program that records the screencast. It shows
-   the scene title as a semi-opaque overlay and the other text as subtitles.
+   edited script into a Puppeteer program that records the screencast, written
+   against the recorder's `demo-kit` library (see below), which shows the scene
+   title as a semi-opaque overlay and the other text as subtitles.
    Claude's output streams in the same way, then the program replaces it for
-   review (and can be edited). A **safety check**
-   scans it (see below). Below that is a field for each environment variable
-   the script reads (see _Environment variables_).
+   review. It can be edited in a code editor with JavaScript highlighting and
+   find/replace (Ctrl+F). A **safety check** scans it (see below) and lists
+   its findings under the editor; clicking a finding's line number jumps to it,
+   and ✕ dismisses it. The script opens with a comment listing its
+   preconditions: what has to be set up in the app before it can run. A
+   sidebar on the right has two tabs: a field for each environment variable
+   the script reads (see _Environment variables_), and the files it needs
+   (see _Input files_).
 3. **Record.** Click _Record screencast_. The script runs in the recorder
    container, and its output streams in with a running timer. When it finishes,
    the output folder opens on your desktop.
@@ -79,11 +85,13 @@ Everything is configurable from the ⚙ button:
 - **Stage 2: Puppeteer script.** The prompt as specified, with `{SCRIPT}`
   replaced by the edited script.
 - **Stage 2: recording environment** (appended). Tells Claude how stage 3 runs
-  the script: ES modules, Puppeteer 24 only, `--no-sandbox`,
-  `acceptInsecureCerts` (for DDEV's mkcert certificates), record to
-  `/output/demo.webm`, overlays that survive navigation, pacing, URLs and
-  credentials read from environment variables with the video script's values
-  as defaults, and one code block in the answer.
+  the script: the `demo-kit` API (`{DEMO_API}` becomes its reference), ES
+  modules with no other packages, pacing, URLs and credentials read from
+  environment variables with the video script's values as defaults, input
+  files named as `/input/...` constants, a header comment listing the script's
+  preconditions, and one code block in the answer. If you have edited this
+  prompt, _Reset to default_ picks up `{DEMO_API}`; without it Claude doesn't
+  know the library exists.
 
 Clear an appended block to send nothing.
 
@@ -92,12 +100,53 @@ reaches you unless you've edited that prompt. Settings saved before this was
 the case hold a copy of every default; use _Reset to default_ on a prompt to
 pick up the current one.
 
+## demo-kit
+
+Everything demo scripts have in common lives in a small library installed in
+the recorder image as the `demo-kit` package
+([docker/recorder/demo-kit.js](docker/recorder/demo-kit.js)), so the generated
+scripts only say what happens in the demo, and a fix there fixes every script
+rather than needing another prompt instruction:
+
+- `record(async (demo) => { … })` launches Chrome with the right options,
+  records to `/output/demo.webm` from the first page load, and on a failure
+  logs it, saves `failure.png`, still keeps the video and exits non-zero.
+- `demo.scene()`, `say()`, `title()`, `subtitle()` drive the overlay. It lives
+  in a shadow root on `<html>` that's there from the start of every page, is
+  put back whenever the page removes it, and bypasses the page's CSP.
+- `demo.click()`, `type()`, `select()`, `upload()`, `highlight()` wait for
+  their target, scroll to it and glide a drawn cursor to it (headless
+  screencasts show no mouse pointer), at a pace a viewer can follow.
+- What the recording can't show is drawn into the overlay instead: a
+  `<select>`'s open list (`select()`, `showOptions()`), the page's
+  `alert()`/`confirm()` dialogs (accepted automatically, then
+  `showDialog()`), view-source (`showSource()`) and a DevTools console
+  (`showConsole()`). `zoomIn()` enlarges a screenshot of an element in the
+  overlay, so nothing on the page (a fixed sidebar with a higher z-index, a
+  parent that clips) can cover or cut it off. `markText()`, `selectText()`
+  and `check()` cover the rest of what demos kept writing themselves.
+- `saveSession()`/`useSession()` swap the browser's cookies, so users signed
+  in off camera can take turns in one recording, and `badge()` labels whose
+  turn it is.
+- Everything it does is logged with the time since the run started: each
+  scene and action (typed text only by its length, since it's often a
+  password), each page load with its status and title, the page's errors and
+  failed loads, a target still being waited for every 5 seconds, and on a
+  failure the step that failed. `demo.log()` adds a line of the script's own.
+
+Its API reference, [docker/recorder/demo-kit.md](docker/recorder/demo-kit.md),
+is what Claude is given, and a test fails if a public method is missing from
+it. Editing either file rebuilds the image on the next recording. A script
+saved with a recording needs the library to run anywhere else.
+
 ## Environment variables
 
 The recorder container gets none of this machine's environment. The app finds
 the variables the script reads as `process.env.NAME` (or `process.env['NAME']`,
 or `const { NAME } = process.env`) and shows a field for each under the script,
-with the script's own default as the placeholder. Filled-in values are passed
+with the script's own default as the placeholder. A default that is code, such
+as `` `${APP_URL}/login` ``, is shown as that code (and in the field's tooltip),
+so it's clear the field can stay blank. Filled-in values are passed
 with `docker run -e` and remembered per repository. A blank field is left unset,
 so the default applies. Only variables the script reads are passed.
 
@@ -111,10 +160,27 @@ the container won't reach it, the recording log says why:
 - Docker Desktop, where it's the VM's network unless host networking is on (or
   use `host.docker.internal`).
 
+## Input files
+
+Some demos need a file from you, such as a plugin archive to upload. The
+script names each one by its full path, e.g. `/input/my-plugin.zip`, and the
+_Files_ tab beside the script shows a slot for each. Drop a file on a slot, or
+use _Choose…_, and it is mounted under that name whatever it's called on disk.
+Files dropped anywhere else in the tab (or added with _Add…_) keep their own
+names.
+
+Each file is bind-mounted read-only at `/input/<name>`, and `/input` is the
+container's working directory, so relative paths work too. Files are
+referenced, not copied, and remembered per repository; one that has since
+been moved or deleted is marked and left out of the run. A slot with no file
+doesn't stop a recording, but the log says so.
+
 ## The safety check
 
 Before stage 3, the generated script is parsed with acorn and checked for
 things a recording script has no reason to do:
+
+`demo-kit` and `puppeteer` are the packages scripts may import.
 
 - **Blocks recording:** importing `child_process`, `net`, `http(s)`, `vm`,
   `worker_threads` and similar; module names computed at runtime; `eval` or
@@ -123,10 +189,13 @@ things a recording script has no reason to do:
   socket, cloud metadata endpoints or crypto miners.
 - **Warns:** packages that aren't in the image, paths it can't resolve, Node-side
   `fetch`, reading the whole of `process.env` (named variables are fine), long base64 or escaped strings, minified lines, and a
-  script that never calls `page.screencast()`.
+  script that never calls demo-kit's `record()` or `page.screencast()`.
 
-To record anyway, tick _I've reviewed these and want to record anyway_. The
-main process checks again before it starts, so the renderer can't skip the
+Recording stays disabled until every blocking (red) finding has been
+dismissed, which is how you say you've reviewed it. Dismissals follow the
+finding's code rather than its line number, so edits elsewhere don't bring
+them back; _Show dismissed safety notes_ above the editor does. The main
+process checks again before it starts, so the renderer can't skip the
 check.
 
 The check is a tripwire, not a sandbox. The real containment is the container:
@@ -151,13 +220,14 @@ src/
     claude.js      spawns the Claude CLI; StreamParser turns stream-json into UI events
     safety.js      static check of the generated script
     script-env.js  finds the environment variables the script reads
+    script-files.js finds the /input files the script reads
     recorder.js    builds the recorder image, runs the script in it
     shell.js       runs Claude and Docker through a login shell, so they're found from the desktop menu
     text.js        arg splitting, templating, code-fence extraction
     store.js       JSON settings/session store in userData
   preload/index.js contextBridge API
-  renderer/        React UI: App.jsx (stages), components/Settings.jsx, LogView.jsx, Markdown.jsx
-docker/recorder/   the recorder image (Dockerfile + entrypoint)
+  renderer/        React UI: App.jsx (stages), components/Settings.jsx, LogView.jsx, Markdown.jsx, CodeEditor.jsx (CodeMirror), InputFiles.jsx
+docker/recorder/   the recorder image (Dockerfile + entrypoint) and demo-kit, the library scripts use
 tests/             node:test unit tests
 ```
 

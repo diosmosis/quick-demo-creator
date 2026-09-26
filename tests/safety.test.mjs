@@ -103,7 +103,29 @@ test('test_checkScript_should_warn_when_the_recording_is_saved_outside_output', 
 })
 
 test('test_checkScript_should_warn_when_nothing_is_recorded', () => {
-  assert.ok(messages("await page.goto('http://x')").some((m) => /Never calls page.screencast/.test(m)))
+  assert.ok(messages("await page.goto('http://x')").some((m) => /Never calls demo-kit's record\(\) or page.screencast\(\)/.test(m)))
+})
+
+test('test_checkScript_should_pass_a_demo_kit_script', () => {
+  const code = `
+import { record } from 'demo-kit'
+const APP_URL = process.env.APP_URL || 'http://localhost:8080'
+await record(async (demo) => {
+  await demo.scene('Home')
+  await demo.goto(APP_URL)
+})`
+  assert.deepEqual(checkScript(code), { ok: true, findings: [] })
+})
+
+test('test_checkScript_should_count_demo_kit_record_under_any_import_name', () => {
+  for (const code of [
+    "import { record as go } from 'demo-kit'\nawait go(async () => {})",
+    "import * as kit from 'demo-kit'\nawait kit.record(async () => {})"
+  ]) {
+    assert.deepEqual(messages(code), [], code)
+  }
+  // A record() that isn't demo-kit's records nothing.
+  assert.ok(messages("import { record } from './other.js'\nawait record()").some((m) => /Never calls/.test(m)))
 })
 
 test('test_checkScript_should_block_dangerous_process_members', () => {
