@@ -159,8 +159,23 @@ code {
   flex: 1;
 }
 .pr-title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
   font-size: 15px;
   font-weight: 600;
+}
+.pr-title .link-btn {
+  margin-left: auto;
+}
+.stage-toolbar .link-btn {
+  margin-left: auto;
+}
+.stage > .pane {
+  flex: 1;
+}
+.split.even {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
 .split {
@@ -184,6 +199,84 @@ code {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* ---- markdown preview ------------------------------------------------ */
+.markdown {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 16px;
+  line-height: 1.5;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  margin: 16px 0 6px;
+  line-height: 1.25;
+}
+.markdown h1 {
+  font-size: 20px;
+}
+.markdown h2 {
+  font-size: 17px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+.markdown h3 {
+  font-size: 15px;
+}
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown table {
+  margin: 6px 0;
+}
+.markdown ul,
+.markdown ol {
+  padding-left: 22px;
+}
+.markdown code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.07);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.markdown pre {
+  background: rgba(0, 0, 0, 0.25);
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  overflow: auto;
+}
+.markdown pre code {
+  background: none;
+  padding: 0;
+}
+.markdown blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 10px;
+  color: var(--muted);
+}
+.markdown table {
+  border-collapse: collapse;
+}
+.markdown th,
+.markdown td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+}
+.markdown a {
+  color: var(--accent);
+}
+.markdown hr {
+  border: none;
+  border-top: 1px solid var(--border);
 }
 
 /* ---- log ------------------------------------------------------------- */
@@ -272,6 +365,40 @@ code {
   tab-size: 2;
 }
 
+/* The generated script, with line numbers. */
+.code-editor {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.code-editor:focus-within {
+  border-color: var(--accent);
+}
+.code-editor .editor {
+  border: none;
+  border-radius: 0;
+}
+.gutter {
+  /* Matches .editor.code's font, line height and top padding row for row;
+     the generous bottom padding lets it scroll as far as the textarea does.
+     It only ever follows the textarea, so the excess is never seen. */
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px 8px 200px 12px;
+  white-space: pre;
+  text-align: right;
+  color: var(--muted);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+  user-select: none;
+  flex-shrink: 0;
+}
+
 /* ---- safety check ---------------------------------------------------- */
 .safety {
   border: 1px solid var(--border);
@@ -308,6 +435,55 @@ code {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--muted);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.safety .line:hover {
+  color: var(--text);
+}
+
+/* ---- script environment ---------------------------------------------- */
+.env {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  background: var(--panel);
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 12px;
+  align-items: center;
+  /* Scrolls rather than squeezing the editor when a script reads many variables. */
+  max-height: 25%;
+  overflow: auto;
+  flex-shrink: 0;
+}
+.env-title {
+  grid-column: 1 / -1;
+  font-weight: 600;
+  /* Stays in view while the fields scroll; the offset covers the box's padding. */
+  position: sticky;
+  top: -8px;
+  margin-top: -8px;
+  padding: 8px 0 4px;
+  background: var(--panel);
+  z-index: 1;
+}
+.env-title .muted {
+  font-weight: normal;
+}
+.env-row {
+  display: contents;
+}
+.env-row code {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.env-row input {
+  font-family: var(--mono);
+  font-size: 12px;
 }
 
 /* ---- recording result ------------------------------------------------ */

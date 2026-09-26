@@ -1,10 +1,11 @@
 // Stage 3: runs the generated script in the recorder image with only the run's
 // output folder mounted.
-import { spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { splitArgs, scriptExtension } from './text.js'
+import { ENV_NAME } from './script-env.js'
+import { SHELL_NOISE, isNotFound, killTree, notFoundMessage, spawnInShell } from './shell.js'
 
 const HASH_LABEL = 'quick-demo-creator.context-hash'
 
@@ -21,27 +22,31 @@ function contextHash(dir) {
 // exit code; `onSpawn` receives the child so the caller can cancel it.
 function run(cmd, args, { onLine = () => {}, onSpawn = () => {} } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawnInShell(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     onSpawn(child)
     let captured = ''
     const pipe = (stream, kind) => {
       let buf = ''
       stream.setEncoding('utf8')
+      const emit = (line) => {
+        if (SHELL_NOISE.test(line)) return
+        captured += line + '\n'
+        onLine(line, kind)
+      }
       stream.on('data', (chunk) => {
-        captured += chunk
         buf += chunk
         const lines = buf.split(/\r?\n|\r/)
         buf = lines.pop()
-        for (const line of lines) onLine(line, kind)
+        lines.forEach(emit)
       })
-      stream.on('end', () => buf && onLine(buf, kind))
+      stream.on('end', () => buf && emit(buf))
     }
     pipe(child.stdout, 'stdout')
     pipe(child.stderr, 'stderr')
-    child.on('error', (err) =>
-      reject(err.code === 'ENOENT' ? new Error(`Couldn't run "${cmd}". Set the Docker executable in Settings.`) : err)
+    child.on('error', (err) => reject(new Error(`Could not start bash to run ${cmd}: ${err.message}`)))
+    child.on('close', (code) =>
+      isNotFound(code, captured) ? reject(new Error(notFoundMessage(cmd, 'Docker executable'))) : resolve({ code, output: captured })
     )
-    child.on('close', (code) => resolve({ code, output: captured }))
   })
 }
 
@@ -57,7 +62,8 @@ export class Recorder {
     const { code, output } = await run(settings.dockerPath, [
       'image', 'inspect', '--format', `{{ index .Config.Labels "${HASH_LABEL}" }}`, settings.dockerImage
     ])
-    return code === 0 && output.trim() === contextHash(this.contextDir)
+    // The last line: a login shell's rc files may print something first.
+    return code === 0 && output.trim().split('\n').pop() === contextHash(this.contextDir)
   }
 
   async buildImage(settings, onEvent) {
@@ -77,13 +83,20 @@ export class Recorder {
     if (code !== 0) throw new Error(`docker build failed with code ${code}.`)
   }
 
+  // Which Docker this is. Both kinds change what the container can reach, and
+  // rootless also changes which user it should run as.
+  async dockerInfo(settings) {
+    const { code, output } = await run(settings.dockerPath, ['info', '--format', '{{json .SecurityOptions}} {{.OperatingSystem}}'])
+    // The last line: a login shell's rc files may print something first.
+    const line = code === 0 ? output.trim().split('\n').pop() : ''
+    return { rootless: line.includes('rootless'), desktop: /Docker Desktop/i.test(line) }
+  }
+
   // Rootful Docker needs --user so files in /output end up owned by the host
   // user. Rootless Docker already maps container root to the host user, and
   // there --user would map to a subordinate uid that can't write the mount.
-  async userArgs(settings) {
-    if (!process.getuid) return []
-    const { code, output } = await run(settings.dockerPath, ['info', '--format', '{{json .SecurityOptions}}'])
-    if (code === 0 && output.includes('rootless')) return []
+  userArgs(docker) {
+    if (!process.getuid || docker.rootless) return []
     return ['--user', `${process.getuid()}:${process.getgid()}`]
   }
 
@@ -92,8 +105,9 @@ export class Recorder {
   }
 
   // Records `code` into a new folder under settings.outputDir. Resolves with
-  // the folder and the files the run produced.
-  async record({ settings, code, script, name, onEvent }) {
+  // the folder and the files the run produced. `env` is passed into the
+  // container; `targets` are the URLs the script will visit, for the notes.
+  async record({ settings, code, script, name, env = {}, targets = [], onEvent }) {
     this.cancelled = false
     await this.ensureImage(settings, onEvent)
     if (this.cancelled) throw new Error('Cancelled.')
@@ -106,6 +120,10 @@ export class Recorder {
     fs.writeFileSync(path.join(runDir, 'script.md'), script || '')
     const before = new Set(fs.readdirSync(runDir))
 
+    const docker = await this.dockerInfo(settings)
+    const runArgs = splitArgs(settings.dockerRunArgs || '')
+    for (const note of networkNotes({ runArgs, docker, targets })) onEvent({ type: 'stderr', text: note + '\n' })
+
     this.container = `quick-demo-creator-${crypto.randomBytes(4).toString('hex')}`
     const args = [
       'run', '--rm', '--init',
@@ -113,11 +131,12 @@ export class Recorder {
       '--shm-size=1g',
       '--cap-drop=ALL',
       '--security-opt=no-new-privileges',
-      ...(await this.userArgs(settings)),
+      ...this.userArgs(docker),
+      ...envArgs(env),
       '-e', `CONVERT_MP4=${settings.convertToMp4 ? 1 : 0}`,
       '-v', `${runDir}:/output`,
       '-v', `${scriptPath}:/app/${scriptName}:ro`,
-      ...splitArgs(settings.dockerRunArgs || ''),
+      ...runArgs,
       settings.dockerImage,
       scriptName
     ]
@@ -145,9 +164,57 @@ export class Recorder {
   cancel(settings) {
     this.cancelled = true
     // Killing the docker CLI leaves the container running; stop it by name.
-    if (this.container) spawn(settings.dockerPath, ['kill', this.container], { stdio: 'ignore' }).on('error', () => {})
-    if (this.child) this.child.kill('SIGTERM')
+    if (this.container) spawnInShell(settings.dockerPath, ['kill', this.container], { stdio: 'ignore' }).on('error', () => {})
+    if (this.child) killTree(this.child)
   }
+}
+
+// `-e NAME=value` for each variable that has a value; a blank one is left
+// unset so the script's own default applies.
+export function envArgs(env) {
+  return Object.entries(env)
+    .filter(([name, value]) => ENV_NAME.test(name) && String(value ?? '').trim() !== '')
+    .flatMap(([name, value]) => ['-e', `${name}=${value}`])
+}
+
+// Warnings about URLs on this machine that the container won't reach.
+export function networkNotes({ runArgs, docker, targets }) {
+  const local = [...new Set(targets.filter(isLocalUrl))]
+  const notes = []
+  if (!usesHostNetwork(runArgs)) {
+    if (local.length) {
+      notes.push(
+        `${local.join(', ')} ${local.length > 1 ? 'are' : 'is'} served on this machine, but the container doesn't share its network. ` +
+          'Add --network host to the extra docker run arguments in Settings.'
+      )
+    }
+  } else if (docker.rootless) {
+    notes.push(
+      "Docker is rootless, where --network host is RootlessKit's network rather than this machine's, so localhost and " +
+        '*.ddev.site in the container don\'t reach apps served here. Allow host loopback ' +
+        '(DOCKERD_ROOTLESS_ROOTLESSKIT_DISABLE_HOST_LOOPBACK=false) and use 10.0.2.2 in place of localhost.'
+    )
+  } else if (docker.desktop) {
+    notes.push(
+      "This is Docker Desktop, where --network host is its VM's network unless host networking is turned on in its " +
+        'settings (Resources → Network). Otherwise use host.docker.internal in place of localhost.'
+    )
+  }
+  return notes
+}
+
+function usesHostNetwork(args) {
+  return args.some((arg, i) => /^--net(work)?=host$/.test(arg) || (/^--net(work)?$/.test(arg) && args[i + 1] === 'host'))
+}
+
+function isLocalUrl(value) {
+  let host
+  try {
+    host = new URL(value).hostname
+  } catch {
+    return false
+  }
+  return host === 'localhost' || host === '[::1]' || /^127\./.test(host) || /\.(ddev\.site|localhost)$/.test(host)
 }
 
 function timestamp() {

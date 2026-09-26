@@ -111,6 +111,15 @@ test('test_checkScript_should_block_dangerous_process_members', () => {
   assert.equal(checkScript('process.env.HOME').ok, true)
 })
 
+test('test_checkScript_should_warn_about_reading_the_whole_environment_but_not_named_variables', () => {
+  for (const code of ['process.env.APP_URL', "process.env['APP_URL']", 'const { APP_URL } = process.env']) {
+    assert.ok(!messages(code).some((m) => /environment/.test(m)), code)
+  }
+  for (const code of ['JSON.stringify(process.env)', 'process.env[name]', 'const { ...all } = process.env']) {
+    assert.ok(messages(code).some((m) => /whole environment/.test(m)), code)
+  }
+})
+
 test('test_checkScript_should_flag_suspicious_source_patterns', () => {
   assert.equal(checkScript("fetch('http://169.254.169.254/latest/meta-data')").ok, false)
   assert.equal(checkScript("const pool = 'stratum+tcp://pool'").ok, false)

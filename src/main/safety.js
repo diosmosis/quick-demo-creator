@@ -136,7 +136,7 @@ function isRelative(p) {
   return !p.startsWith('/') && !p.includes('..')
 }
 
-function parse(code) {
+export function parse(code) {
   const opts = { ecmaVersion: 'latest', locations: true, allowHashBang: true, allowAwaitOutsideFunction: true }
   try {
     return acorn.parse(code, { ...opts, sourceType: 'module' })
@@ -147,6 +147,20 @@ function parse(code) {
       throw moduleErr
     }
   }
+}
+
+// Whether `env` (a process.env node) is read as process.env.NAME,
+// process.env['NAME'] or `const { NAME } = process.env`.
+function readsNamedVariables(env, parent) {
+  if (parent?.type === 'MemberExpression' && parent.object === env) {
+    return !parent.computed || typeof parent.property.value === 'string'
+  }
+  return (
+    parent?.type === 'VariableDeclarator' &&
+    parent.init === env &&
+    parent.id.type === 'ObjectPattern' &&
+    parent.id.properties.every((p) => p.type === 'Property')
+  )
 }
 
 function lineOf(code, index) {
@@ -284,8 +298,10 @@ export function checkScript(code) {
           const prop = node.property.name
           if (['binding', '_linkedBinding', 'dlopen', 'setuid', 'setgid', 'kill'].includes(prop)) {
             add('danger', `Uses process.${prop}.`, line)
-          } else if (prop === 'env') {
-            add('warning', 'Reads environment variables.', line)
+          } else if (prop === 'env' && !readsNamedVariables(node, ancestors[ancestors.length - 2])) {
+            // Named reads are how scripts take their URL; the app lists those
+            // and fills them in. Only the environment as a whole is odd.
+            add('warning', 'Reads the whole environment rather than named variables.', line)
           }
         }
         break

@@ -11,14 +11,17 @@ browser recording.
 1. **Plan.** Paste a PR link and click _Plan_. The app fetches the PR's
    description and diff, then asks Claude for a video script: scenes, each with
    a short overlay title, the browser actions to perform and the subtitles to
-   show. Claude's output streams in as it works. The finished script lands in
-   an editor for you to adjust. Add anything Claude can't know, such as the URL
+   show. Claude's output streams in as it works. Once it finishes, the log
+   makes way for the script: an editor on the left and the rendered markdown on
+   the right. _Show Claude's output_ brings the log back. Add anything Claude can't know, such as the URL
    the app runs at and how to log in.
 2. **Puppeteer script.** Click _Generate Puppeteer script_. Claude turns the
    edited script into a Puppeteer program that records the screencast. It shows
    the scene title as a semi-opaque overlay and the other text as subtitles.
-   The program is shown for review (and can be edited). A **safety check**
-   scans it (see below).
+   Claude's output streams in the same way, then the program replaces it for
+   review (and can be edited). A **safety check**
+   scans it (see below). Below that is a field for each environment variable
+   the script reads (see _Environment variables_).
 3. **Record.** Click _Record screencast_. The script runs in the recorder
    container, and its output streams in with a running timer. When it finishes,
    the output folder opens on your desktop.
@@ -54,13 +57,14 @@ Everything is configurable from the ⚙ button:
 |---|---|---|
 | GitHub token | none | Needed for private repositories. Used to fetch the PR, and also passed to Claude as `GH_TOKEN`/`GITHUB_TOKEN`. |
 | Fetch PR details into the prompt | on | Appends the PR's description and diff (capped by _Maximum diff size_) to the planning prompt, so Claude doesn't need its own GitHub access. |
-| Claude executable | `claude` | A name on `PATH` or an absolute path. The desktop menu doesn't see your shell's `PATH`. |
-| Claude extra arguments | `--allowedTools "WebFetch,Bash(gh pr view:*),Bash(gh pr diff:*)"` | Placed before `-p --output-format stream-json --verbose --include-partial-messages`, which the app always adds. |
-| Send the prompt | standard input | Switch to _as the last argument_ if a wrapper doesn't forward stdin. |
+| Claude executable | `claude` | A name on `PATH` (e.g. `claudebox`), or a path. Run through an interactive login bash, so it finds whatever your `~/.bashrc` adds to `PATH` even when the app is started from the desktop menu. |
+| Executable arguments | none | For a wrapper: placed right after the executable, before anything meant for Claude. `{PROJECT}` becomes the PR's repository name. claudebox runs from a temp dir here, so it can't tell the project from where it's started; give it `--project {PROJECT}`, and send the prompt as the last argument, since the box doesn't pass stdin on to Claude. |
+| Claude extra arguments | `--allowedTools "WebFetch,Bash(gh pr view:*),Bash(gh pr diff:*)"` | Placed after the executable arguments and before `-p --output-format stream-json --verbose --include-partial-messages`, which the app always adds. |
+| Send the prompt | standard input | Switch to _as the last argument_ if a wrapper doesn't forward stdin (claudebox with `--project` doesn't). Linux caps one argument at 128 KB, so a large diff may need a lower _Maximum diff size_. |
 | Working directory | a temp dir | Where Claude runs. |
 | Prompts | see below | Each has a _Reset to default_ link. |
 | Docker executable / image name | `docker` / `quick-demo-creator-recorder` | |
-| Extra `docker run` arguments | `--network host` | Lets the script reach apps served on this machine (`localhost`, `*.ddev.site`). |
+| Extra `docker run` arguments | `--network host` | Lets the script reach apps served on this machine (`localhost`, `*.ddev.site`). On rootful Docker that's all it takes. On rootless Docker or Docker Desktop, "host" is not this machine; the recording log says what to do instead. |
 | Output folder | `~/Videos/quick-demo-creator` | Each recording gets its own subfolder with the video, the Puppeteer script and the video script. |
 | Convert to MP4 | on | `page.screencast()` records WebM; the MP4 plays in more places. |
 
@@ -75,11 +79,37 @@ Everything is configurable from the ⚙ button:
 - **Stage 2: Puppeteer script.** The prompt as specified, with `{SCRIPT}`
   replaced by the edited script.
 - **Stage 2: recording environment** (appended). Tells Claude how stage 3 runs
-  the script: ES modules, Puppeteer 24 only, `--no-sandbox`, record to
-  `/output/demo.webm`, overlays that survive navigation, pacing, and one code
-  block in the answer.
+  the script: ES modules, Puppeteer 24 only, `--no-sandbox`,
+  `acceptInsecureCerts` (for DDEV's mkcert certificates), record to
+  `/output/demo.webm`, overlays that survive navigation, pacing, URLs and
+  credentials read from environment variables with the video script's values
+  as defaults, and one code block in the answer.
 
 Clear an appended block to send nothing.
+
+Settings only keep what differs from the defaults, so a new default prompt
+reaches you unless you've edited that prompt. Settings saved before this was
+the case hold a copy of every default; use _Reset to default_ on a prompt to
+pick up the current one.
+
+## Environment variables
+
+The recorder container gets none of this machine's environment. The app finds
+the variables the script reads as `process.env.NAME` (or `process.env['NAME']`,
+or `const { NAME } = process.env`) and shows a field for each under the script,
+with the script's own default as the placeholder. Filled-in values are passed
+with `docker run -e` and remembered per repository. A blank field is left unset,
+so the default applies. Only variables the script reads are passed.
+
+Before recording, the app checks which Docker it's talking to. If a URL the
+script will visit is on this machine (`localhost`, `127.*`, `*.ddev.site`) and
+the container won't reach it, the recording log says why:
+
+- the extra `docker run` arguments don't include `--network host`;
+- rootless Docker, where `--network host` is RootlessKit's network (allow host
+  loopback and use `10.0.2.2`);
+- Docker Desktop, where it's the VM's network unless host networking is on (or
+  use `host.docker.internal`).
 
 ## The safety check
 
@@ -92,7 +122,7 @@ things a recording script has no reason to do:
   `process.binding` and similar; references to credential files, the Docker
   socket, cloud metadata endpoints or crypto miners.
 - **Warns:** packages that aren't in the image, paths it can't resolve, Node-side
-  `fetch`, `process.env`, long base64 or escaped strings, minified lines, and a
+  `fetch`, reading the whole of `process.env` (named variables are fine), long base64 or escaped strings, minified lines, and a
   script that never calls `page.screencast()`.
 
 To record anyway, tick _I've reviewed these and want to record anyway_. The
@@ -120,11 +150,13 @@ src/
     github.js      PR URL parsing and fetching (Electron's net.fetch)
     claude.js      spawns the Claude CLI; StreamParser turns stream-json into UI events
     safety.js      static check of the generated script
+    script-env.js  finds the environment variables the script reads
     recorder.js    builds the recorder image, runs the script in it
+    shell.js       runs Claude and Docker through a login shell, so they're found from the desktop menu
     text.js        arg splitting, templating, code-fence extraction
     store.js       JSON settings/session store in userData
   preload/index.js contextBridge API
-  renderer/        React UI: App.jsx (stages), components/Settings.jsx, components/LogView.jsx
+  renderer/        React UI: App.jsx (stages), components/Settings.jsx, LogView.jsx, Markdown.jsx
 docker/recorder/   the recorder image (Dockerfile + entrypoint)
 tests/             node:test unit tests
 ```
@@ -134,6 +166,8 @@ work and restored on the next launch.
 
 ## Notes
 
+- Claude Code streams its thinking as empty deltas, so a long think shows only
+  _Thinking…_ and the timer until Claude starts writing.
 - The GitHub token is stored in plain text in `userData/settings.json`. Prefer a
   fine-grained, read-only token.
 - Cancelling a recording kills its container by name. Killing the `docker` CLI

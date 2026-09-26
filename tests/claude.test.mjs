@@ -1,17 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { StreamParser } from '../src/main/claude.js'
-
-const line = (o) => JSON.stringify(o) + '\n'
-const delta = (text) => line({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
-
-function parse(chunks) {
-  const events = []
-  const parser = new StreamParser((e) => events.push(e))
-  for (const c of chunks) parser.feed(c)
-  parser.end()
-  return { events, parser }
-}
+import { StreamParser, commandArgs } from '../src/main/claude.js'
 
 test('test_feed_should_stream_text_deltas_and_take_the_answer_from_the_result', () => {
   const all = delta('Hel') + delta('lo') + line({ type: 'result', subtype: 'success', result: 'Hello', is_error: false })
@@ -62,3 +51,50 @@ test('test_feed_should_pass_non_json_output_through_as_the_answer', () => {
   assert.deepEqual(events.map((e) => e.text), ['plain output\n', 'second line\n'])
   assert.equal(parser.answer(), 'plain output\nsecond line\n')
 })
+
+test('test_feed_should_announce_thinking_even_when_its_deltas_are_empty', () => {
+  const { events } = parse([
+    line({ type: 'stream_event', event: { type: 'content_block_start', content_block: { type: 'thinking', thinking: '' } } }),
+    line({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: '', estimated_tokens: 50 } } }),
+    delta('Done')
+  ])
+  assert.deepEqual(events, [
+    { type: 'status', text: 'Thinking…' },
+    { type: 'text', text: 'Done' }
+  ])
+})
+
+test('test_commandArgs_should_put_the_executables_own_arguments_first_with_the_project_filled_in', () => {
+  const settings = { executableArgs: '--project {PROJECT}', claudeArgs: '--model opus' }
+  assert.deepEqual(commandArgs(settings, 'matomo'), [
+    '--project',
+    'matomo',
+    '--model',
+    'opus',
+    '-p',
+    '--output-format',
+    'stream-json',
+    '--verbose',
+    '--include-partial-messages'
+  ])
+})
+
+test('test_commandArgs_should_refuse_a_project_placeholder_without_a_pr', () => {
+  assert.throws(() => commandArgs({ executableArgs: '--project {PROJECT}', claudeArgs: '' }, null), /PR link/)
+  assert.equal(commandArgs({ executableArgs: '', claudeArgs: '' }, null)[0], '-p')
+})
+
+function line(o) {
+  return JSON.stringify(o) + '\n'
+}
+function delta(text) {
+  return line({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
+}
+
+function parse(chunks) {
+  const events = []
+  const parser = new StreamParser((e) => events.push(e))
+  for (const c of chunks) parser.feed(c)
+  parser.end()
+  return { events, parser }
+}

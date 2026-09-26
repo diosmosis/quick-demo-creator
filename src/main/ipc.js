@@ -1,15 +1,16 @@
 // Every IPC handler. Handlers return { ok, value } or { ok: false, error } so
 // the renderer gets the plain message rather than Electron's wrapped one.
 import { ipcMain, dialog, shell, net, BrowserWindow } from 'electron'
-import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { DEFAULT_SETTINGS, effectiveSettings } from './defaults.js'
 import { parsePrUrl, fetchPr, formatPrContext, verifyToken } from './github.js'
 import { runClaude } from './claude.js'
 import { checkScript } from './safety.js'
+import { ENV_NAME, scriptEnvVars } from './script-env.js'
 import { Recorder } from './recorder.js'
 import { extractCode, fillTemplate } from './text.js'
+import { isNotFound, spawnInShell, withoutShellNoise } from './shell.js'
 
 export function registerIpc(app, store) {
   const defaultOutputDir = path.join(app.getPath('videos'), 'quick-demo-creator')
@@ -36,10 +37,11 @@ export function registerIpc(app, store) {
     return dir
   }
 
-  async function askClaude(stage, event, prompt) {
+  // `pr` fills in {PROJECT} in the executable arguments; it may be null.
+  async function askClaude(stage, event, prompt, pr) {
     if (claudeJobs[stage]) throw new Error('Already running.')
     const s = settings()
-    const job = runClaude({ settings: s, prompt, cwd: claudeCwd(s), onEvent: emitter(event, stage) })
+    const job = runClaude({ settings: s, project: pr?.repo, prompt, cwd: claudeCwd(s), onEvent: emitter(event, stage) })
     claudeJobs[stage] = job
     try {
       return await job.done
@@ -51,7 +53,13 @@ export function registerIpc(app, store) {
   // --- settings & session -------------------------------------------------
   handle('settings:get', () => ({ settings: settings(), defaults: { ...DEFAULT_SETTINGS, outputDir: defaultOutputDir } }))
   handle('settings:set', (patch) => {
-    store.set({ settings: { ...store.get('settings', {}), ...patch } })
+    // Only what differs from the defaults is kept, so a better default in a
+    // later version still reaches settings the user never changed.
+    const saved = { ...store.get('settings', {}), ...patch }
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === DEFAULT_SETTINGS[key] || (key === 'outputDir' && value === defaultOutputDir)) delete saved[key]
+    }
+    store.set({ settings: saved })
     return settings()
   })
   handle('session:get', () => store.get('session', {}))
@@ -59,18 +67,43 @@ export function registerIpc(app, store) {
     store.set({ session })
   })
 
+  // Values for the scripts' environment variables, remembered per repository
+  // since that is what decides where the app runs locally.
+  const projectKey = (prUrl) => {
+    const pr = parsePrUrl(prUrl || '')
+    return pr ? `${pr.owner}/${pr.repo}`.toLowerCase() : ''
+  }
+  handle('projectEnv:get', (prUrl) => ({
+    project: projectKey(prUrl),
+    values: store.get('projectEnv', {})[projectKey(prUrl)] || {}
+  }))
+  handle('projectEnv:set', ({ prUrl, values }) => {
+    const all = store.get('projectEnv', {})
+    const key = projectKey(prUrl)
+    const merged = { ...all[key] }
+    for (const [name, value] of Object.entries(values)) {
+      if (!ENV_NAME.test(name)) continue
+      if (String(value).trim()) merged[name] = String(value)
+      else delete merged[name]
+    }
+    store.set({ projectEnv: { ...all, [key]: merged } })
+  })
+
   // --- environment ------------------------------------------------------
   handle('github:verifyToken', (token) => verifyToken(token, net.fetch))
   handle('tools:version', ({ path: exe }) => {
     return new Promise((resolve, reject) => {
-      const child = spawn(exe, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = spawnInShell(exe, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] })
       let out = ''
       child.stdout.on('data', (d) => (out += d))
       child.stderr.on('data', (d) => (out += d))
-      child.on('error', (err) => reject(new Error(err.code === 'ENOENT' ? `"${exe}" was not found.` : err.message)))
-      child.on('close', (code) =>
-        code === 0 ? resolve(out.trim().split('\n')[0]) : reject(new Error(out.trim() || `Exited with code ${code}.`))
-      )
+      child.on('error', (err) => reject(new Error(`Could not start bash: ${err.message}`)))
+      child.on('close', (code) => {
+        // The last line: a login shell's rc files may print something first.
+        const said = withoutShellNoise(out).trim()
+        if (code === 0) return resolve(said.split('\n').pop())
+        reject(new Error(isNotFound(code, out) ? `"${exe}" was not found, even with your login shell's PATH.` : said || `Exited with code ${code}.`))
+      })
     })
   })
   handle('dialog:selectFolder', async (_arg, event) => {
@@ -106,26 +139,27 @@ export function registerIpc(app, store) {
 
     if (s.planningInstructions.trim()) prompt += '\n\n' + s.planningInstructions.trim()
 
-    const script = await askClaude('plan', event, prompt)
+    const script = await askClaude('plan', event, prompt, pr)
     return { script, prTitle, prUrl: pr.url }
   })
 
   // --- stage 2: generate the puppeteer script ---------------------------
-  handle('generate:start', async ({ script }, event) => {
+  handle('generate:start', async ({ script, prUrl }, event) => {
     if (!script.trim()) throw new Error('The script is empty.')
     const s = settings()
     let prompt = fillTemplate(s.recordingPrompt, { SCRIPT: script })
     if (s.recordingEnvironment.trim()) prompt += '\n\n' + s.recordingEnvironment.trim()
 
-    const answer = await askClaude('generate', event, prompt)
+    const answer = await askClaude('generate', event, prompt, parsePrUrl(prUrl))
     const code = extractCode(answer)
     return { code, safety: checkScript(code) }
   })
 
   handle('safety:check', ({ code }) => checkScript(code))
+  handle('script:env', ({ code }) => scriptEnvVars(code))
 
   // --- stage 3: record --------------------------------------------------
-  handle('record:start', async ({ code, script, prUrl, overrideSafety }, event) => {
+  handle('record:start', async ({ code, script, prUrl, overrideSafety, env = {} }, event) => {
     // Checked again here so the renderer can't skip it.
     const safety = checkScript(code)
     if (!safety.ok && !overrideSafety) {
@@ -134,7 +168,11 @@ export function registerIpc(app, store) {
     const s = settings()
     const pr = parsePrUrl(prUrl)
     const name = pr ? `${pr.repo}-pr${pr.number}` : 'demo'
-    const result = await recorder.record({ settings: s, code, script, name, onEvent: emitter(event, 'record') })
+    // Only what the script reads goes into the container.
+    const vars = scriptEnvVars(code)
+    const values = Object.fromEntries(vars.map((v) => [v.name, String(env[v.name] ?? '')]))
+    const targets = vars.map((v) => values[v.name].trim() || v.fallback)
+    const result = await recorder.record({ settings: s, code, script, name, env: values, targets, onEvent: emitter(event, 'record') })
     if (s.openFolderWhenDone) shell.openPath(result.runDir)
     return result
   })

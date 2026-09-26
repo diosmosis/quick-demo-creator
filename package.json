@@ -15,7 +15,9 @@
   },
   "dependencies": {
     "acorn": "^8.14.0",
-    "acorn-walk": "^8.3.4"
+    "acorn-walk": "^8.3.4",
+    "dompurify": "^3.4.16",
+    "marked": "^18.0.14"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",

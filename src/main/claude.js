@@ -1,7 +1,7 @@
 // Runs the Claude CLI non-interactively and turns its stream-json output into
 // events the UI can show as they happen.
-import { spawn } from 'node:child_process'
-import { splitArgs } from './text.js'
+import { fillTemplate, splitArgs } from './text.js'
+import { SHELL_NOISE, isNotFound, killTree, notFoundMessage, spawnInShell, withoutShellNoise } from './shell.js'
 
 // Always added after the user's own arguments: the parser below depends on them.
 const STREAM_ARGS = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages']
@@ -105,6 +105,10 @@ export class StreamParser {
   streamEvent(event) {
     if (event.type === 'message_start' && this.wroteText) {
       this.emit({ type: 'text', text: '\n\n' })
+    } else if (event.type === 'content_block_start' && event.content_block?.type === 'thinking') {
+      // Claude Code streams thinking as empty deltas (only a token estimate),
+      // so without this a long think looks like nothing is happening.
+      this.emit({ type: 'status', text: 'Thinking…' })
     } else if (event.type === 'content_block_delta') {
       const d = event.delta || {}
       if (d.type === 'text_delta' && d.text) {
@@ -136,11 +140,28 @@ export class StreamParser {
   }
 }
 
+// Everything after the executable: its own arguments, then Claude's, then the
+// ones the parser needs. The executable's own come first because a wrapper
+// such as claudebox takes options Claude doesn't know (`--project`); {PROJECT}
+// in them is the PR's repository name, or null when there is no PR link.
+// Filled in after splitting, so a name can never become more than one argument.
+export function commandArgs(settings, project) {
+  const own = splitArgs(settings.executableArgs || '')
+  if (project == null && own.some((arg) => arg.includes('{PROJECT}'))) {
+    throw new Error('The executable arguments use {PROJECT}, which comes from the PR link. Enter one first.')
+  }
+  return [
+    ...own.map((arg) => fillTemplate(arg, { PROJECT: project })),
+    ...splitArgs(settings.claudeArgs || ''),
+    ...STREAM_ARGS
+  ]
+}
+
 // Starts Claude with `prompt`. Returns { done, cancel }: `done` resolves with
 // the final answer, or rejects with a readable error.
-export function runClaude({ settings, prompt, cwd, onEvent }) {
+export function runClaude({ settings, project, prompt, cwd, onEvent }) {
   const byArgument = settings.promptDelivery === 'argument'
-  const args = [...splitArgs(settings.claudeArgs || ''), ...STREAM_ARGS]
+  const args = commandArgs(settings, project)
   onEvent({ type: 'status', text: `$ ${[settings.claudePath, ...args].join(' ')}${byArgument ? ' <prompt>' : ' < prompt'}` })
   if (byArgument) args.push(prompt)
 
@@ -150,7 +171,7 @@ export function runClaude({ settings, prompt, cwd, onEvent }) {
     env.GITHUB_TOKEN = settings.githubToken
   }
 
-  const child = spawn(settings.claudePath, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
+  const child = spawnInShell(settings.claudePath, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
   const parser = new StreamParser(onEvent)
   let stderr = ''
   let cancelled = false
@@ -159,8 +180,12 @@ export function runClaude({ settings, prompt, cwd, onEvent }) {
   child.stderr.setEncoding('utf8')
   child.stdout.on('data', (chunk) => parser.feed(chunk))
   child.stderr.on('data', (chunk) => {
-    stderr += chunk
-    onEvent({ type: 'stderr', text: chunk })
+    const text = chunk
+      .split(/(?<=\n)/)
+      .filter((line) => !SHELL_NOISE.test(line.trimEnd()))
+      .join('')
+    stderr += text
+    if (text) onEvent({ type: 'stderr', text })
   })
   // A wrapper that doesn't read stdin closes it early; that's not an error.
   child.stdin.on('error', () => {})
@@ -168,13 +193,7 @@ export function runClaude({ settings, prompt, cwd, onEvent }) {
   else child.stdin.end(prompt)
 
   const done = new Promise((resolve, reject) => {
-    child.on('error', (err) => {
-      reject(
-        err.code === 'ENOENT'
-          ? new Error(`Couldn't run "${settings.claudePath}". Set the Claude executable in Settings.`)
-          : err
-      )
-    })
+    child.on('error', (err) => reject(new Error(`Could not start bash to run ${settings.claudePath}: ${err.message}`)))
     child.on('close', (code, signal) => {
       parser.end()
       if (cancelled) return reject(new Error('Cancelled.'))
@@ -186,9 +205,14 @@ export function runClaude({ settings, prompt, cwd, onEvent }) {
         if (result.is_error) return reject(new Error(result.result || `Claude reported an error (${result.subtype}).`))
       }
       const answer = parser.answer().trim()
+      if (!result && isNotFound(code, stderr)) return reject(new Error(notFoundMessage(settings.claudePath, 'Claude executable')))
       if (code !== 0 && !result) {
-        const tail = stderr.trim().split('\n').slice(-5).join('\n')
-        return reject(new Error(`Claude exited with ${signal || `code ${code}`}${tail ? `:\n${tail}` : ''}`))
+        const tail = withoutShellNoise(stderr).trim().split('\n').slice(-5).join('\n')
+        // claudebox with --project hands the run to the box without its stdin.
+        const hint = !byArgument && /Input must be provided either through stdin/.test(stderr)
+          ? '\n\nThe prompt was sent on standard input, which this executable doesn\'t pass on to Claude. In Settings, set "Send the prompt" to "as the last argument".'
+          : ''
+        return reject(new Error(`Claude exited with ${signal || `code ${code}`}${tail ? `:\n${tail}` : ''}${hint}`))
       }
       if (!answer) return reject(new Error('Claude finished without an answer.'))
       resolve(answer)
@@ -199,7 +223,7 @@ export function runClaude({ settings, prompt, cwd, onEvent }) {
     done,
     cancel() {
       cancelled = true
-      child.kill('SIGTERM')
+      killTree(child)
     }
   }
 }

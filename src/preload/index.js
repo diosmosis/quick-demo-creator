@@ -21,8 +21,11 @@ const api = {
 
   // stages
   plan: (prUrl) => call('plan:start', { prUrl }),
-  generate: (script) => call('generate:start', { script }),
+  generate: (script, prUrl) => call('generate:start', { script, prUrl }),
   checkSafety: (code) => call('safety:check', { code }),
+  scriptEnv: (code) => call('script:env', { code }),
+  getProjectEnv: (prUrl) => call('projectEnv:get', prUrl),
+  setProjectEnv: (prUrl, values) => call('projectEnv:set', { prUrl, values }),
   record: (args) => call('record:start', args),
   buildImage: () => call('image:build'),
   cancel: (stage) => call('job:cancel', stage),

@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import LogView, { appendLog } from './components/LogView'
 import Settings from './components/Settings'
+import Markdown from './components/Markdown'
+import CodeEditor from './components/CodeEditor'
 import { api } from './api'
 
 const STAGES = [
@@ -32,12 +34,18 @@ export default function App() {
   const [code, setCode] = useState('')
   const [safety, setSafety] = useState(null)
   const [overrideSafety, setOverrideSafety] = useState(false)
+  // The script's environment variables and this repository's values for them.
+  const [envVars, setEnvVars] = useState([])
+  const [projectEnv, setProjectEnv] = useState({ project: '', values: {} })
   const [loaded, setLoaded] = useState(false)
 
   const [running, setRunning] = useState({})
   const [logs, setLogs] = useState({ plan: [], generate: [], record: [] })
   const [errors, setErrors] = useState({})
-  const [startedAt, setStartedAt] = useState(null)
+  // Claude's log is only shown while it works (or after it failed); after
+  // that the result takes the space, unless the user asks to see the log.
+  const [showLog, setShowLog] = useState({})
+  const [startedAt, setStartedAt] = useState({})
   const [now, setNow] = useState(Date.now())
   const [recording, setRecording] = useState(null) // { runDir, files, failed }
 
@@ -67,18 +75,35 @@ export default function App() {
 
   // Re-check the script as the user edits it.
   const edited = useRef(false)
+  const codeEditor = useRef(null)
   useEffect(() => {
     if (!edited.current) return
     const t = setTimeout(() => api.checkSafety(code).then(setSafety), 300)
     return () => clearTimeout(t)
   }, [code])
 
-  const recordingNow = running.record
   useEffect(() => {
-    if (!recordingNow) return
+    const t = setTimeout(() => api.scriptEnv(code).then(setEnvVars), 300)
+    return () => clearTimeout(t)
+  }, [code])
+
+  useEffect(() => {
+    if (!loaded) return
+    const t = setTimeout(() => api.getProjectEnv(prUrl).then(setProjectEnv), 300)
+    return () => clearTimeout(t)
+  }, [loaded, prUrl])
+
+  const setEnvValue = (name, value) => {
+    setProjectEnv((p) => ({ ...p, values: { ...p.values, [name]: value } }))
+    api.setProjectEnv(prUrl, { [name]: value })
+  }
+
+  const anyRunning = Object.values(running).some(Boolean)
+  useEffect(() => {
+    if (!anyRunning) return
     const t = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(t)
-  }, [recordingNow])
+  }, [anyRunning])
 
   // Runs one stage: clears its log, tracks running/error state.
   const runStage = useCallback(async (stage, fn) => {
@@ -86,6 +111,9 @@ export default function App() {
     const logKey = stage === 'image' ? 'record' : stage
     setLogs((l) => ({ ...l, [logKey]: [] }))
     setErrors((e) => ({ ...e, [logKey]: null }))
+    setShowLog((v) => ({ ...v, [logKey]: undefined }))
+    setStartedAt((t) => ({ ...t, [logKey]: Date.now() }))
+    setNow(Date.now())
     setRunning((r) => ({ ...r, [logKey]: true }))
     try {
       await fn()
@@ -108,7 +136,7 @@ export default function App() {
 
   const generate = () =>
     runStage('generate', async () => {
-      const res = await api.generate(script)
+      const res = await api.generate(script, prUrl)
       edited.current = false
       setCode(res.code)
       setSafety(res.safety)
@@ -118,16 +146,12 @@ export default function App() {
   const record = () =>
     runStage('record', async () => {
       setRecording(null)
-      setStartedAt(Date.now())
-      setNow(Date.now())
-      setRecording(await api.record({ code, script, prUrl, overrideSafety }))
+      setRecording(await api.record({ code, script, prUrl, overrideSafety, env: projectEnv.values }))
     })
 
   const rebuildImage = () => {
     setShowSettings(false)
     runStage('image', async () => {
-      setStartedAt(Date.now())
-      setNow(Date.now())
       setRecording(null)
       await api.buildImage()
     })
@@ -138,7 +162,6 @@ export default function App() {
     setConfig((c) => ({ ...c, settings }))
   }
 
-  const anyRunning = Object.values(running).some(Boolean)
   const blocked = safety && !safety.ok && !overrideSafety
 
   const stageState = (key) => {
@@ -149,6 +172,30 @@ export default function App() {
     }
     return 'idle'
   }
+
+  const logVisible = (stage) => running[stage] || (showLog[stage] ?? (!!errors[stage] && logs[stage].length > 0))
+
+  const elapsed = (stage) => startedAt[stage] && <span className="elapsed">{formatElapsed(now - startedAt[stage])}</span>
+
+  // Hides or brings back Claude's log once it has finished.
+  const logToggle = (stage) =>
+    !running[stage] &&
+    logs[stage].length > 0 && (
+      <button className="link-btn" onClick={() => setShowLog((v) => ({ ...v, [stage]: !logVisible(stage) }))}>
+        {logVisible(stage) ? "Hide Claude's output" : "Show Claude's output"}
+      </button>
+    )
+
+  const claudePane = (stage, placeholder) => (
+    <div className="pane">
+      <div className="pane-title">
+        Claude
+        {running[stage] ? <span className="muted"> — working…</span> : <span className="muted"> — finished</span>}
+        {elapsed(stage)}
+      </div>
+      <LogView entries={logs[stage]} placeholder={placeholder} />
+    </div>
+  )
 
   const cancelButton = (stage) =>
     running[stage] && (
@@ -190,31 +237,42 @@ export default function App() {
             </button>
             {cancelButton('plan')}
           </div>
-          {prTitle && <div className="pr-title">{prTitle}</div>}
-          {errors.plan && <div className="banner error">{errors.plan}</div>}
-          <div className="split">
-            <div className="pane">
-              <div className="pane-title">Claude</div>
-              <LogView entries={logs.plan} placeholder="Claude's output streams here while it plans the video." />
+          {(prTitle || logs.plan.length > 0) && (
+            <div className="pr-title">
+              <span>{prTitle}</span>
+              {logToggle('plan')}
             </div>
-            <div className="pane">
-              <div className="pane-title">
-                Video script <span className="muted">— edit it to suit, then generate the Puppeteer script</span>
+          )}
+          {errors.plan && <div className="banner error">{errors.plan}</div>}
+          {logVisible('plan') ? (
+            claudePane('plan', "Claude's output streams here while it plans the video.")
+          ) : (
+            <>
+              <div className="split even">
+                <div className="pane">
+                  <div className="pane-title">
+                    Video script <span className="muted">— edit it to suit, then generate the Puppeteer script</span>
+                  </div>
+                  <textarea
+                    className="editor"
+                    value={script}
+                    onChange={(e) => setScript(e.target.value)}
+                    placeholder="The planned script appears here. Add anything Claude can't know, such as the URL the app runs at and how to log in."
+                    spellCheck
+                  />
+                </div>
+                <div className="pane">
+                  <div className="pane-title">Preview</div>
+                  <Markdown text={script} placeholder="The rendered script appears here." />
+                </div>
               </div>
-              <textarea
-                className="editor"
-                value={script}
-                onChange={(e) => setScript(e.target.value)}
-                placeholder="The planned script appears here. Add anything Claude can't know, such as the URL the app runs at and how to log in."
-                spellCheck
-              />
               <div className="pane-actions">
                 <button className="btn" onClick={generate} disabled={!script.trim() || anyRunning}>
                   Generate Puppeteer script →
                 </button>
               </div>
-            </div>
-          </div>
+            </>
+          )}
         </main>
       )}
 
@@ -222,27 +280,25 @@ export default function App() {
         <main className="stage">
           <div className="stage-toolbar">
             <div className="stage-heading">Puppeteer script {running.generate && <span className="muted">— generating…</span>}</div>
+            {logToggle('generate')}
             {cancelButton('generate')}
           </div>
           {errors.generate && <div className="banner error">{errors.generate}</div>}
-          <div className="split">
-            <div className="pane">
-              <div className="pane-title">Claude</div>
-              <LogView entries={logs.generate} placeholder="Claude's output streams here while it writes the script." />
-            </div>
+          {logVisible('generate') ? (
+            claudePane('generate', "Claude's output streams here while it writes the script.")
+          ) : (
             <div className="pane">
               <div className="pane-title">
                 Generated script <span className="muted">— give it a once-over before recording</span>
               </div>
-              <textarea
-                className="editor code"
+              <CodeEditor
+                ref={codeEditor}
                 value={code}
                 onChange={(e) => {
                   edited.current = true
                   setCode(e.target.value)
                 }}
                 placeholder="The generated Puppeteer script appears here."
-                spellCheck={false}
               />
               {safety && (
                 <div className={`safety ${safety.ok ? (safety.findings.length ? 'warn' : 'ok') : 'danger'}`}>
@@ -257,7 +313,12 @@ export default function App() {
                     <ul>
                       {safety.findings.map((f, i) => (
                         <li key={i} className={f.severity}>
-                          {f.line ? <span className="line">line {f.line}</span> : null} {f.message}
+                          {f.line ? (
+                            <button className="line" title="Show this line" onClick={() => codeEditor.current?.goToLine(f.line)}>
+                              line {f.line}
+                            </button>
+                          ) : null}{' '}
+                          {f.message}
                         </li>
                       ))}
                     </ul>
@@ -270,13 +331,36 @@ export default function App() {
                   )}
                 </div>
               )}
+              {envVars.length > 0 && (
+                <div className="env">
+                  <div className="env-title">
+                    Environment{' '}
+                    <span className="muted">
+                      — passed to the recorder; leave a field blank for the script's default
+                      {projectEnv.project && `. Remembered for ${projectEnv.project}.`}
+                    </span>
+                  </div>
+                  {envVars.map((v) => (
+                    <label key={v.name} className="env-row">
+                      <code>{v.name}</code>
+                      <input
+                        type="text"
+                        value={projectEnv.values[v.name] ?? ''}
+                        placeholder={v.fallback || '(no default)'}
+                        onChange={(e) => setEnvValue(v.name, e.target.value)}
+                        spellCheck={false}
+                      />
+                    </label>
+                  ))}
+                </div>
+              )}
               <div className="pane-actions">
                 <button className="btn" onClick={record} disabled={!code.trim() || anyRunning || blocked}>
                   Record screencast →
                 </button>
               </div>
             </div>
-          </div>
+          )}
         </main>
       )}
 
@@ -286,7 +370,7 @@ export default function App() {
             <div className="stage-heading">
               Recording
               {!running.record && recording && !recording.failed && <span className="muted"> — finished</span>}
-              {startedAt && <span className="elapsed">{formatElapsed(now - startedAt)}</span>}
+              {elapsed('record')}
             </div>
             {cancelButton('record')}
             {!running.record && code && (

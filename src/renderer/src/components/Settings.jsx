@@ -109,8 +109,18 @@ export default function Settings({ settings, defaults, onSave, onClose, onRebuil
               </div>
               <CheckResult k="claude" />
               <p className="hint">
-                A name on <code>PATH</code> or an absolute path, e.g. <code>claudebox</code>. Apps started from the desktop
-                menu don't see your shell's <code>PATH</code>, so an absolute path is safer.
+                A name on <code>PATH</code> or a path, e.g. <code>claudebox</code>. It runs through a login shell, so it
+                finds what your <code>~/.bashrc</code> puts on <code>PATH</code> even when started from the desktop menu.
+              </p>
+            </div>
+            <div className="field">
+              <label>Executable arguments</label>
+              <input type="text" value={form.executableArgs} onChange={set('executableArgs')} placeholder="(none)" />
+              <p className="hint">
+                For a wrapper around Claude, placed straight after the executable and never given to Claude.{' '}
+                <code>{'{PROJECT}'}</code> is replaced with the PR's repository name, so for claudebox use{' '}
+                <code>--project {'{PROJECT}'}</code>, and send the prompt as the last argument: the
+                box doesn't pass standard input on to Claude.
               </p>
             </div>
             <div className="field">
@@ -129,7 +139,9 @@ export default function Settings({ settings, defaults, onSave, onClose, onRebuil
                 <option value="stdin">on standard input</option>
                 <option value="argument">as the last argument</option>
               </select>
-              <p className="hint">Standard input has no length limit; use an argument only if your wrapper doesn't forward stdin.</p>
+              <p className="hint">Standard input has no length limit; use an argument if your wrapper doesn't forward stdin (claudebox with{' '}
+                <code>--project</code> doesn't). Linux limits one argument to 128 KB, so lower the maximum diff size if
+                planning then fails with <code>E2BIG</code>.</p>
             </div>
             <div className="field">
               <label>Working directory</label>
@@ -201,7 +213,8 @@ export default function Settings({ settings, defaults, onSave, onClose, onRebuil
               <input type="text" value={form.dockerRunArgs} onChange={set('dockerRunArgs')} />
               <p className="hint">
                 <code>--network host</code> lets the script reach apps served on this machine (<code>localhost</code>,{' '}
-                <code>*.ddev.site</code>). Remove it to give the container only ordinary outbound access.
+                <code>*.ddev.site</code>) on rootful Docker. On rootless Docker or Docker Desktop it doesn't, and the
+                recording log says what to do instead. Remove it to give the container only ordinary outbound access.
               </p>
             </div>
             <div className="field">
