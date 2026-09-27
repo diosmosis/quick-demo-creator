@@ -24,7 +24,9 @@ browser recording.
    find/replace (Ctrl+F). A **safety check** scans it (see below) and lists
    its findings under the editor; clicking a finding's line number jumps to it,
    and ✕ dismisses it. The script opens with a comment listing its
-   preconditions: what has to be set up in the app before it can run. A
+   preconditions: what has to be set up in the app before it can run. Before
+   the first scene, and before recording starts, the script checks the ones it
+   can and fails listing every precondition that isn't met. A
    sidebar on the right has two tabs: a field for each environment variable
    the script reads (see _Environment variables_), and the files it needs
    (see _Input files_).
@@ -89,7 +91,8 @@ Everything is configurable from the ⚙ button:
   modules with no other packages, pacing, URLs and credentials read from
   environment variables with the video script's values as defaults, input
   files named as `/input/...` constants, a header comment listing the script's
-  preconditions, and one code block in the answer. If you have edited this
+  preconditions, a check of those preconditions before recording starts, and
+  one code block in the answer. If you have edited this
   prompt, _Reset to default_ picks up `{DEMO_API}`; without it Claude doesn't
   know the library exists.
 

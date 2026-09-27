@@ -511,12 +511,17 @@ export class Demo {
     const url = this.page.url()
     const html = await this.page.evaluate(async () => (await fetch(location.href, { credentials: 'include' })).text())
     const lines = html.split('\n')
-    let hit = -1
+    // Where the text is within its line too: a line can wrap over many
+    // screens (inline JSON, minified CSS), so scrolling to the line isn't enough.
+    let hit = null
     for (const needle of needles) {
-      hit = lines.findIndex((line) => line.includes(needle))
-      if (hit >= 0) break
+      const line = lines.findIndex((text) => text.includes(needle))
+      if (line >= 0) {
+        hit = { line, start: lines[line].indexOf(needle), length: needle.length }
+        break
+      }
     }
-    if (needles.length) this.log(hit < 0 ? `    none of ${needles.map((n) => `"${n}"`).join(', ')} is in the source` : `    found on line ${hit + 1}`)
+    if (needles.length) this.log(hit ? `    found on line ${hit.line + 1}` : `    none of ${needles.map((n) => `"${n}"`).join(', ')} is in the source`)
     await this.evaluateOverlay((key, url, lines, hit, ms) => window[key]?.source(url, lines, hit, ms), url, lines, hit, Math.round(3000 * this.options.pace))
     await this.pause(hit >= 0 ? 3000 : 2000)
   }
@@ -763,6 +768,7 @@ function overlay(key, state) {
     .source .line { display: flex; }
     .source .line span:first-child { flex: none; width: 56px; padding-right: 14px; text-align: right; color: #999; }
     .source .hit { background: #fff3a0; }
+    .source mark { background: #ffd54f; color: inherit; }
   `
   const make = (className) => {
     const el = document.createElement('div')
@@ -952,8 +958,9 @@ function overlay(key, state) {
         }
         pre.textContent = `> ${code}`
       },
-      // Draws the page source over the page, scrolled to line `hit` (from 0;
-      // -1 for none), which is highlighted for `ms`; null removes it.
+      // Draws the page source over the page, scrolled to `hit` ({ line, from
+      // 0, and the start and length of the text in it }; null for none), which
+      // is highlighted and ringed for `ms`; null removes it.
       source: (url, lines, hit, ms) => {
         ensure()
         if (url == null) return layer('source', null)
@@ -961,20 +968,27 @@ function overlay(key, state) {
         const bar = make('bar')
         bar.textContent = `view-source:${url}`
         const pre = document.createElement('pre')
+        let match = null
         lines.forEach((text, i) => {
-          const line = make(i === hit ? 'line hit' : 'line')
+          const line = make(i === hit?.line ? 'line hit' : 'line')
           const number = document.createElement('span')
           number.textContent = String(i + 1)
           const code = document.createElement('span')
-          code.textContent = text
+          if (i === hit?.line) {
+            match = document.createElement('mark')
+            match.textContent = text.slice(hit.start, hit.start + hit.length)
+            code.append(text.slice(0, hit.start), match, text.slice(hit.start + hit.length))
+          } else {
+            code.textContent = text
+          }
           line.append(number, code)
           pre.append(line)
         })
         view.append(bar, pre)
-        const row = pre.children[hit]
-        if (!row) return
-        view.scrollTop = row.offsetTop - view.clientHeight / 2
-        drawRing(row.getBoundingClientRect(), ms)
+        if (!match) return
+        const box = match.getBoundingClientRect()
+        view.scrollTop += box.top + box.height / 2 - view.clientHeight / 2
+        drawRing(match.getBoundingClientRect(), ms)
       }
     }
   })
