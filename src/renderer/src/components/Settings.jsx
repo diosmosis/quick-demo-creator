@@ -34,9 +34,9 @@ export default function Settings({ settings, defaults, onSave, onClose, onRebuil
     }
   }
 
-  const chooseFolder = async () => {
+  const chooseFolder = (key) => async () => {
     const dir = await api.selectFolder()
-    if (dir) setForm((f) => ({ ...f, outputDir: dir }))
+    if (dir) setForm((f) => ({ ...f, [key]: dir }))
   }
 
   const CheckResult = ({ k }) => {
@@ -179,7 +179,42 @@ export default function Settings({ settings, defaults, onSave, onClose, onRebuil
               </label>
               <textarea rows={12} value={form.recordingEnvironment} onChange={set('recordingEnvironment')} />
               <p className="hint">
-                Tells Claude how stage 3 runs the script (paths, packages, browser flags). Leave it blank to send nothing.
+                Tells Claude how stage 4 runs the script (paths, packages, browser flags). Leave it blank to send nothing.
+              </p>
+            </div>
+          </section>
+
+          <section>
+            <h3>Environment</h3>
+            <div className="field">
+              <label>DDEV executable</label>
+              <div className="row">
+                <input type="text" value={form.ddevPath} onChange={set('ddevPath')} placeholder="ddev" />
+                <button className="btn secondary" onClick={() => check('ddev', () => api.toolVersion(form.ddevPath))}>
+                  Test
+                </button>
+              </div>
+              <CheckResult k="ddev" />
+            </div>
+            <div className="field">
+              <label>Instances folder</label>
+              <div className="row">
+                <input type="text" value={form.instancesDir} onChange={set('instancesDir')} />
+                <button className="btn secondary" onClick={chooseFolder('instancesDir')}>
+                  Choose…
+                </button>
+              </div>
+              <p className="hint">
+                Each instance is copied into a subfolder named after it. A full copy takes as much space as the project
+                does (less on a filesystem that can share blocks, such as Btrfs).
+              </p>
+            </div>
+            <div className="field">
+              <label>Editor</label>
+              <input type="text" value={form.editorCommand} onChange={set('editorCommand')} placeholder="(the file manager)" />
+              <p className="hint">
+                What <em>Edit files</em> opens an instance's folder with, such as <code>code</code> or <code>phpstorm</code>;
+                the folder is added as the last argument.
               </p>
             </div>
           </section>
@@ -221,7 +256,7 @@ export default function Settings({ settings, defaults, onSave, onClose, onRebuil
               <label>Output folder</label>
               <div className="row">
                 <input type="text" value={form.outputDir} onChange={set('outputDir')} />
-                <button className="btn secondary" onClick={chooseFolder}>
+                <button className="btn secondary" onClick={chooseFolder('outputDir')}>
                   Choose…
                 </button>
               </div>

@@ -8,7 +8,7 @@ export const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 // Set by the recorder image or Docker; a script reading these isn't asking to
 // be configured.
-const PROVIDED = new Set(['HOME', 'PATH', 'PWD', 'HOSTNAME', 'CONVERT_MP4', 'PUPPETEER_CACHE_DIR', 'NODE_VERSION', 'YARN_VERSION'])
+const PROVIDED = new Set(['HOME', 'PATH', 'PWD', 'HOSTNAME', 'CONVERT_MP4', 'DEMO_CHECK_ONLY', 'PUPPETEER_CACHE_DIR', 'NODE_VERSION', 'YARN_VERSION'])
 
 // [{ name, fallback, computed }] in order of first use. The fallback is the
 // literal the script uses when the variable is unset (after || or ??, or a

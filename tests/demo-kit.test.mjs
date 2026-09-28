@@ -8,7 +8,7 @@ import { Demo, readingTime, zoomedBox } from '../docker/recorder/demo-kit.js'
 const REFERENCE = fs.readFileSync(new URL('../docker/recorder/demo-kit.md', import.meta.url), 'utf8')
 
 // Methods scripts aren't meant to call.
-const INTERNAL = new Set(['constructor', 'setup', 'stopRecording', 'moveTo', 'update', 'render', 'evaluateOverlay', 'action', 'ring', 'moveToPoint', 'drawOptions', 'findWithText', 'cdp'])
+const INTERNAL = new Set(['constructor', 'setup', 'stopRecording', 'moveTo', 'update', 'render', 'evaluateOverlay', 'action', 'ring', 'moveToPoint', 'drawOptions', 'findWithText', 'uncovered', 'cdp'])
 
 test('test_readingTime_should_allow_a_second_per_four_words', () => {
   assert.equal(readingTime('one two three four five six seven eight nine ten eleven twelve'), 3000)
@@ -48,4 +48,15 @@ test('test_Demo_should_have_every_public_method_described_in_the_reference', () 
   const methods = Object.getOwnPropertyNames(Demo.prototype).filter((name) => !INTERNAL.has(name))
   const missing = methods.filter((name) => !REFERENCE.includes(`demo.${name}(`))
   assert.deepEqual(missing, [])
+})
+
+test('test_startRecording_should_end_a_check_only_run_where_the_recording_would_start', async () => {
+  const demo = new Demo(null, null, { autoStart: false, checkOnly: true })
+  await assert.rejects(demo.startRecording(), /The preconditions are met/)
+  assert.equal(demo.recording, false)
+})
+
+test('test_startRecording_should_say_a_check_only_run_checked_nothing_when_recording_starts_on_the_first_page', async () => {
+  const demo = new Demo(null, null, { checkOnly: true })
+  await assert.rejects(demo.startRecording(), /doesn't check its preconditions first/)
 })

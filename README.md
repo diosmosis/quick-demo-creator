@@ -6,7 +6,7 @@ Puppeteer script for it. Puppeteer then records the screencast in a Docker
 container. No AI generates or edits any image or video: every frame is a real
 browser recording.
 
-## The three stages
+## The four stages
 
 1. **Plan.** Paste a PR link and click _Plan_. The app fetches the PR's
    description and diff, then asks Claude for a video script: scenes, each with
@@ -30,7 +30,20 @@ browser recording.
    sidebar on the right has two tabs: a field for each environment variable
    the script reads (see _Environment variables_), and the files it needs
    (see _Input files_).
-3. **Record.** Optionally choose a _Background audio_ file under the sidebar
+3. **Environment setup.** Run the demo against fresh copies of a DDEV project
+   rather than the one you work in, as many as the demo needs (two Matomos,
+   say). Choose the project's folder as the template and click _Add and start_:
+   the app copies it, starts the copy as a DDEV project of its own and, if the
+   template is running, imports its database (see _Instances_). Each instance
+   can be started, stopped, restarted and deleted, given extra volumes, opened
+   in your editor to change its files, and sent any `ddev` command. The same
+   sidebar as stage 2 sits beside it, and the environment variables' fields
+   offer the running instances' URLs. _Check preconditions_ runs the script
+   only up to where the recording would start, so just its precondition checks
+   run, and nothing is recorded; a failure leaves a screenshot of the page. The
+   stage is optional: with the app already running, record straight from
+   stage 2.
+4. **Record.** Optionally choose a _Background audio_ file under the sidebar
    first: it is looped for the whole length of the MP4, fading out over its
    last two seconds (the WebM stays silent, and nothing is added with _Convert
    to MP4_ off). Click _Record screencast_. The script runs in the recorder
@@ -78,6 +91,9 @@ Everything is configurable from the ⚙ button:
 | Extra `docker run` arguments | `--network host` | Lets the script reach apps served on this machine (`localhost`, `*.ddev.site`). On rootful Docker that's all it takes. On rootless Docker or Docker Desktop, "host" is not this machine; the recording log says what to do instead. |
 | Output folder | `~/Videos/quick-demo-creator` | Each recording gets its own subfolder with the video, the Puppeteer script and the video script. |
 | Convert to MP4 | on | `page.screencast()` records WebM; the MP4 plays in more places. The background audio is only added to the MP4. |
+| DDEV executable | `ddev` | For the Environment setup stage, run through the login shell like Claude and Docker. |
+| Instances folder | `~/demo-instances` | Each instance is copied into a subfolder named after it. |
+| Editor | the file manager | What _Edit files_ opens an instance's folder with, e.g. `code` or `phpstorm`; the folder is added as the last argument. |
 
 ### Prompts
 
@@ -89,7 +105,7 @@ Everything is configurable from the ⚙ button:
   with an explanation.
 - **Stage 2: Puppeteer script.** The prompt as specified, with `{SCRIPT}`
   replaced by the edited script.
-- **Stage 2: recording environment** (appended). Tells Claude how stage 3 runs
+- **Stage 2: recording environment** (appended). Tells Claude how stage 4 runs
   the script: the `demo-kit` API (`{DEMO_API}` becomes its reference), ES
   modules with no other packages, pacing, URLs and credentials read from
   environment variables with the video script's values as defaults, input
@@ -181,9 +197,43 @@ referenced, not copied, and remembered per repository; one that has since
 been moved or deleted is marked and left out of the run. A slot with no file
 doesn't stop a recording, but the log says so.
 
+## Instances
+
+DDEV knows a project by its folder and its name, so each instance is a copy of
+the template's folder with a name of its own, set in
+`.ddev/config.zz-quick-demo-creator.yaml`. That file sorts after the template's
+own `config.*.yaml` files, so it wins over a `name` in `config.local.yaml` too.
+The instance is served at `https://<name>.ddev.site`.
+
+- **Full copy** (the default) copies everything, including what git ignores
+  (`vendor`, `node_modules`, local config), so the copy runs like the template.
+  It uses `cp -a --reflink=auto`, which shares blocks on a filesystem that can,
+  such as Btrfs.
+- **Git worktree** checks out the template's current commit, so only committed
+  files are there; if `.ddev` isn't committed, it is copied in.
+
+The router files DDEV generated for the template's project
+(`.ddev/traefik/{certs,config}`, marked `#ddev-generated`) are removed from
+the copy. Named for the template, they would claim its hostname a second time
+and keep DDEV's router from becoming healthy. DDEV writes new ones for the
+copy when it starts. With _Import the template's database_, the template's
+database is exported with `ddev export-db` and imported into the copy after its
+first start; the template has to be running for that.
+
+Extra volumes are written to `.ddev/docker-compose.quick-demo-creator.yaml` as
+bind mounts into a service (`web` unless you say otherwise), and take effect
+when the instance is next started or restarted. _Delete_ asks first, then runs
+`ddev delete --omit-snapshot --yes` (containers, database and volumes) and
+removes the copy (or the worktree, through git). It only deletes a folder that
+holds the override file or sits in the instances folder.
+
+A template whose `.ddev` fixes host ports, such as `host_db_port`, or adds
+hostnames with `additional_hostnames`, gives every copy the same ones, and only
+one of them can start. Change them in the copy with _Edit files_.
+
 ## The safety check
 
-Before stage 3, the generated script is parsed with acorn and checked for
+Before stage 4, the generated script is parsed with acorn and checked for
 things a recording script has no reason to do:
 
 `demo-kit` and `puppeteer` are the packages scripts may import.
@@ -220,19 +270,20 @@ it if you don't need that.
 src/
   main/
     index.js       app/window lifecycle
-    ipc.js         IPC handlers: settings, session, the three stages, cancel
+    ipc.js         IPC handlers: settings, session, the four stages, cancel
     defaults.js    default settings and prompts
     github.js      PR URL parsing and fetching (Electron's net.fetch)
     claude.js      spawns the Claude CLI; StreamParser turns stream-json into UI events
     safety.js      static check of the generated script
     script-env.js  finds the environment variables the script reads
     script-files.js finds the /input files the script reads
-    recorder.js    builds the recorder image, runs the script in it
-    shell.js       runs Claude and Docker through a login shell, so they're found from the desktop menu
+    recorder.js    builds the recorder image, runs the script in it (or only its precondition checks)
+    instances.js   the Environment setup stage's copies of DDEV projects
+    shell.js       runs Claude, Docker and DDEV through a login shell, so they're found from the desktop menu
     text.js        arg splitting, templating, code-fence extraction
     store.js       JSON settings/session store in userData
   preload/index.js contextBridge API
-  renderer/        React UI: App.jsx (stages), components/Settings.jsx, LogView.jsx, Markdown.jsx, CodeEditor.jsx (CodeMirror), InputFiles.jsx
+  renderer/        React UI: App.jsx (stages), components/Settings.jsx, LogView.jsx, Markdown.jsx, CodeEditor.jsx (CodeMirror), InputFiles.jsx, Instances.jsx
 docker/recorder/   the recorder image (Dockerfile + entrypoint) and demo-kit, the library scripts use
 tests/             node:test unit tests
 ```

@@ -1,4 +1,4 @@
-// Stage 3: runs the generated script in the recorder image with only the run's
+// Stage 4: runs the generated script in the recorder image with only the run's
 // output folder mounted.
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -6,10 +6,17 @@ import path from 'node:path'
 import { splitArgs, scriptExtension } from './text.js'
 import { ENV_NAME } from './script-env.js'
 import { INPUT_DIR, isInputName } from './script-files.js'
-import { SHELL_NOISE, isNotFound, killTree, notFoundMessage, spawnInShell } from './shell.js'
+import { killTree, runCommand, spawnInShell } from './shell.js'
 
 const HASH_LABEL = 'quick-demo-creator.context-hash'
 const AUDIO_DIR = '/audio'
+// Where in the output folder a precondition check's files go (a failure
+// screenshot, say), since Docker can already mount that folder; a temporary
+// one may not be visible to it (a snap's Docker has a /tmp of its own). Only
+// the last check's are kept.
+const CHECKS_DIR = '.precondition-checks'
+
+const run = (cmd, args, options) => runCommand(cmd, args, { setting: 'Docker executable', ...options })
 
 // Hash of the image's build context, so an edited Dockerfile triggers a rebuild.
 function contextHash(dir) {
@@ -18,38 +25,6 @@ function contextHash(dir) {
     hash.update(name).update('\0').update(fs.readFileSync(path.join(dir, name))).update('\0')
   }
   return hash.digest('hex').slice(0, 16)
-}
-
-// Runs a command, streaming each output line to `onLine`. Resolves with the
-// exit code; `onSpawn` receives the child so the caller can cancel it.
-function run(cmd, args, { onLine = () => {}, onSpawn = () => {} } = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawnInShell(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] })
-    onSpawn(child)
-    let captured = ''
-    const pipe = (stream, kind) => {
-      let buf = ''
-      stream.setEncoding('utf8')
-      const emit = (line) => {
-        if (SHELL_NOISE.test(line)) return
-        captured += line + '\n'
-        onLine(line, kind)
-      }
-      stream.on('data', (chunk) => {
-        buf += chunk
-        const lines = buf.split(/\r?\n|\r/)
-        buf = lines.pop()
-        lines.forEach(emit)
-      })
-      stream.on('end', () => buf && emit(buf))
-    }
-    pipe(child.stdout, 'stdout')
-    pipe(child.stderr, 'stderr')
-    child.on('error', (err) => reject(new Error(`Could not start bash to run ${cmd}: ${err.message}`)))
-    child.on('close', (code) =>
-      isNotFound(code, captured) ? reject(new Error(notFoundMessage(cmd, 'Docker executable'))) : resolve({ code, output: captured })
-    )
-  })
 }
 
 export class Recorder {
@@ -116,13 +91,17 @@ export class Recorder {
   // the folder and the files the run produced. `env` is passed into the
   // container; `files` ([{ name, path }]) are mounted read-only in /input;
   // `targets` are the URLs the script will visit, for the notes; `audio` is a
-  // file on this machine looped under the MP4, or '' for none.
-  async record({ settings, code, script, name, env = {}, files = [], targets = [], audio = '', onEvent }) {
+  // file on this machine looped under the MP4, or '' for none. With
+  // `checkOnly`, demo-kit ends the run where the recording would start, so
+  // only the script's precondition checks run, and the folder is one reused for them.
+  async record({ settings, code, script, name, env = {}, files = [], targets = [], audio = '', checkOnly = false, onEvent }) {
     this.cancelled = false
     await this.ensureImage(settings, onEvent)
     if (this.cancelled) throw new Error('Cancelled.')
 
-    const runDir = path.join(settings.outputDir, `${name}-${timestamp()}`)
+    const checksDir = path.join(settings.outputDir, CHECKS_DIR)
+    if (checkOnly) fs.rmSync(checksDir, { recursive: true, force: true })
+    const runDir = path.join(checkOnly ? checksDir : settings.outputDir, `${name}-${timestamp()}`)
     fs.mkdirSync(runDir, { recursive: true })
     const scriptName = `demo${scriptExtension(code)}`
     const scriptPath = path.join(runDir, scriptName)
@@ -144,8 +123,9 @@ export class Recorder {
       ...this.userArgs(docker),
       ...envArgs(env),
       ...inputArgs(files),
-      '-e', `CONVERT_MP4=${settings.convertToMp4 ? 1 : 0}`,
-      ...(settings.convertToMp4 ? audioArgs(audio) : []),
+      ...(checkOnly ? ['-e', 'DEMO_CHECK_ONLY=1'] : []),
+      '-e', `CONVERT_MP4=${settings.convertToMp4 && !checkOnly ? 1 : 0}`,
+      ...(settings.convertToMp4 && !checkOnly ? audioArgs(audio) : []),
       '-v', `${runDir}:/output`,
       '-v', `${scriptPath}:/app/${scriptName}:ro`,
       ...runArgs,
@@ -155,7 +135,8 @@ export class Recorder {
     onEvent({ type: 'status', text: `$ ${settings.dockerPath} ${args.join(' ')}` })
 
     const { code: exit } = await run(settings.dockerPath, args, {
-      onLine: (line, kind) => onEvent({ type: kind === 'stderr' ? 'stderr' : 'log', text: line }),
+      // The log ends 'log' lines itself, but not 'stderr' ones.
+      onLine: (line, kind) => onEvent(kind === 'stderr' ? { type: 'stderr', text: line + '\n' } : { type: 'log', text: line }),
       onSpawn: (c) => (this.child = c)
     })
     this.child = null
@@ -168,7 +149,8 @@ export class Recorder {
 
     if (this.cancelled) throw Object.assign(new Error('Cancelled.'), { runDir, files: produced })
     if (exit !== 0) {
-      throw Object.assign(new Error(`The script exited with code ${exit}. See the log above.`), { runDir, files: produced })
+      const message = checkOnly ? 'The precondition checks failed. The log says which.' : `The script exited with code ${exit}. See the log above.`
+      throw Object.assign(new Error(message), { runDir, files: produced })
     }
     return { runDir, files: produced }
   }

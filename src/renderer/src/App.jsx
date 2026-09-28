@@ -5,12 +5,14 @@ import Markdown from './components/Markdown'
 import CodeEditor from './components/CodeEditor'
 import InputFiles from './components/InputFiles'
 import EnvFields from './components/EnvFields'
+import Instances from './components/Instances'
 import SafetyCheck, { findingKey } from './components/SafetyCheck'
 import { api } from './api'
 
 const STAGES = [
   { key: 'plan', label: 'Plan' },
   { key: 'generate', label: 'Puppeteer script' },
+  { key: 'environment', label: 'Environment setup' },
   { key: 'record', label: 'Record' }
 ]
 
@@ -50,7 +52,7 @@ export default function App() {
   const [loaded, setLoaded] = useState(false)
 
   const [running, setRunning] = useState({})
-  const [logs, setLogs] = useState({ plan: [], generate: [], record: [] })
+  const [logs, setLogs] = useState({ plan: [], generate: [], environment: [], record: [] })
   const [errors, setErrors] = useState({})
   // Claude's log is only shown while it works (or after it failed); after
   // that the result takes the space, unless the user asks to see the log.
@@ -58,6 +60,11 @@ export default function App() {
   const [startedAt, setStartedAt] = useState({})
   const [now, setNow] = useState(Date.now())
   const [recording, setRecording] = useState(null) // { runDir, files, failed }
+  // The Environment stage's DDEV project copies, and why DDEV couldn't list them.
+  const [instances, setInstances] = useState({ instances: [], error: '' })
+  const [checked, setChecked] = useState(null) // the last precondition check: { runDir, files, failed }
+  // The Environment setup stage's output, a bottom sheet over the instances.
+  const [outputOpen, setOutputOpen] = useState(false)
 
   useEffect(() => {
     api.getSettings().then(setConfig)
@@ -151,6 +158,7 @@ export default function App() {
     } catch (e) {
       setErrors((err) => ({ ...err, [logKey]: e.message }))
       if (logKey === 'record' && e.data) setRecording({ ...e.data, failed: true })
+      if (logKey === 'environment' && e.data) setChecked({ ...e.data, failed: true })
     } finally {
       setRunning((r) => ({ ...r, [logKey]: false }))
       setNow(Date.now())
@@ -180,6 +188,63 @@ export default function App() {
       setRecording(await api.record({ code, script, prUrl, overrideSafety: !blocked, env: projectEnv.values, files: projectFiles, audio }))
     })
 
+  const refreshInstances = useCallback(() => {
+    api.listInstances().then(setInstances, (e) => setInstances((i) => ({ ...i, error: e.message })))
+  }, [])
+
+  // DDEV's view of the instances changes outside the app too, so it is asked
+  // again every few seconds while the stage is shown.
+  useEffect(() => {
+    if (view !== 'environment') return
+    refreshInstances()
+    if (running.environment) return
+    const t = setInterval(refreshInstances, 10000)
+    return () => clearInterval(t)
+  }, [view, running.environment])
+
+  // The output pops up whenever something starts running, and when it fails.
+  useEffect(() => {
+    if (running.environment || errors.environment) setOutputOpen(true)
+  }, [running.environment, errors.environment])
+
+  const environmentJob = (fn) =>
+    runStage('environment', async () => {
+      try {
+        await fn()
+      } finally {
+        refreshInstances()
+      }
+    })
+
+  const createInstance = (args) => environmentJob(() => api.createInstance(args))
+  const ddev = (name, args) => environmentJob(() => api.ddev(name, args))
+  const removeInstance = (name) => environmentJob(() => api.removeInstance(name))
+  const setVolumes = async (name, volumes, restart) => {
+    if (restart) {
+      return environmentJob(async () => {
+        await api.setVolumes(name, volumes)
+        await api.ddev(name, ['restart'])
+      })
+    }
+    await showingErrors(() => api.setVolumes(name, volumes))
+    refreshInstances()
+  }
+  // For the quick actions that don't clear the stage's log.
+  const showingErrors = async (fn) => {
+    try {
+      await fn()
+      setErrors((e) => ({ ...e, environment: null }))
+    } catch (e) {
+      setErrors((err) => ({ ...err, environment: e.message }))
+    }
+  }
+
+  const checkPreconditions = () =>
+    runStage('environment', async () => {
+      setChecked(null)
+      setChecked(await api.checkPreconditions({ code, script, prUrl, overrideSafety: !blocked, env: projectEnv.values, files: projectFiles }))
+    })
+
   const rebuildImage = () => {
     setShowSettings(false)
     runStage('image', async () => {
@@ -207,7 +272,12 @@ export default function App() {
   const stageState = (key) => {
     if (running[key]) return 'running'
     if (errors[key]) return 'failed'
-    if ((key === 'plan' && script) || (key === 'generate' && code) || (key === 'record' && recording && !recording.failed)) {
+    if (
+      (key === 'plan' && script) ||
+      (key === 'generate' && code) ||
+      (key === 'environment' && checked && !checked.failed) ||
+      (key === 'record' && recording && !recording.failed)
+    ) {
       return 'done'
     }
     return 'idle'
@@ -243,6 +313,80 @@ export default function App() {
         Cancel
       </button>
     )
+
+  // The URLs of the running instances, offered in the environment variables' fields.
+  const instanceUrls = instances.instances
+    .filter((i) => i.status === 'running')
+    .flatMap((i) => [i.url, i.httpUrl])
+    .filter(Boolean)
+
+  // The environment variables and input files, shown beside the script and
+  // beside the environment; `stage` is the one it is shown in.
+  const sidebar = (stage) => (
+    <aside className="side">
+      <div className="tabs">
+        <button className={`tab ${sideTab === 'env' ? 'active' : ''}`} onClick={() => setSideTab('env')}>
+          Environment <span className="count">{envVars.length}</span>
+        </button>
+        <button className={`tab ${sideTab === 'files' ? 'active' : ''}`} onClick={() => setSideTab('files')}>
+          Files <span className={`count ${missingFiles ? 'warn' : ''}`}>{missingFiles ? `${missingFiles} missing` : projectFiles.length}</span>
+        </button>
+      </div>
+      {sideTab === 'env' ? (
+        <EnvFields
+          vars={envVars}
+          values={projectEnv.values}
+          project={projectEnv.project}
+          suggestions={instanceUrls}
+          listId={`instance-urls-${stage}`}
+          onChange={setEnvValue}
+        />
+      ) : (
+        <InputFiles required={requiredFiles} files={projectFiles} onChange={changeFiles} />
+      )}
+      <div className="side-actions">
+        <div className="audio-pick">
+          <div className="files-head">
+            <span>Background audio</span>
+            <span className="files-actions">
+              <button className="link-btn" onClick={chooseAudio}>
+                {audio ? 'Change…' : 'Choose…'}
+              </button>
+              {audio && (
+                <button className="link-btn" onClick={() => setAudio('')}>
+                  Remove
+                </button>
+              )}
+            </span>
+          </div>
+          {audio ? (
+            <span className="files-path" title={audio}>
+              {audio.split(/[\\/]/).pop()}
+            </span>
+          ) : (
+            <span className="hint">None. A file chosen here is looped under the MP4 for its whole length.</span>
+          )}
+          {audio && config && !config.settings.convertToMp4 && (
+            <span className="files-path missing">Only added to the MP4: turn on Convert to MP4 in Settings.</span>
+          )}
+        </div>
+        {blocked && <p className="hint">Dismiss the safety check's red findings once you've reviewed them.</p>}
+        {stage === 'environment' && (
+          <button
+            className="btn secondary"
+            onClick={checkPreconditions}
+            disabled={!code.trim() || anyRunning || blocked}
+            title="Runs the script only up to where the recording would start, so just its precondition checks run"
+          >
+            Check preconditions
+          </button>
+        )}
+        <button className="btn" onClick={record} disabled={!code.trim() || anyRunning || blocked}>
+          Record screencast →
+        </button>
+      </div>
+    </aside>
+  )
 
   // Every stage stays rendered and the others are only hidden, so switching
   // keeps where each one was scrolled to, and the script editor's undo history.
@@ -352,54 +496,64 @@ export default function App() {
                 onGoToLine={(line) => codeEditor.current?.goToLine(line)}
               />
             </div>
-            <aside className="side">
-              <div className="tabs">
-                <button className={`tab ${sideTab === 'env' ? 'active' : ''}`} onClick={() => setSideTab('env')}>
-                  Environment <span className="count">{envVars.length}</span>
-                </button>
-                <button className={`tab ${sideTab === 'files' ? 'active' : ''}`} onClick={() => setSideTab('files')}>
-                  Files <span className={`count ${missingFiles ? 'warn' : ''}`}>{missingFiles ? `${missingFiles} missing` : projectFiles.length}</span>
-                </button>
-              </div>
-              {sideTab === 'env' ? (
-                <EnvFields vars={envVars} values={projectEnv.values} project={projectEnv.project} onChange={setEnvValue} />
-              ) : (
-                <InputFiles required={requiredFiles} files={projectFiles} onChange={changeFiles} />
-              )}
-              <div className="side-actions">
-                <div className="audio-pick">
-                  <div className="files-head">
-                    <span>Background audio</span>
-                    <span className="files-actions">
-                      <button className="link-btn" onClick={chooseAudio}>
-                        {audio ? 'Change…' : 'Choose…'}
-                      </button>
-                      {audio && (
-                        <button className="link-btn" onClick={() => setAudio('')}>
-                          Remove
-                        </button>
-                      )}
-                    </span>
-                  </div>
-                  {audio ? (
-                    <span className="files-path" title={audio}>
-                      {audio.split(/[\\/]/).pop()}
-                    </span>
-                  ) : (
-                    <span className="hint">None. A file chosen here is looped under the MP4 for its whole length.</span>
-                  )}
-                  {audio && config && !config.settings.convertToMp4 && (
-                    <span className="files-path missing">Only added to the MP4: turn on Convert to MP4 in Settings.</span>
-                  )}
-                </div>
-                {blocked && <p className="hint">Dismiss the safety check's red findings once you've reviewed them.</p>}
-                <button className="btn" onClick={record} disabled={!code.trim() || anyRunning || blocked}>
-                  Record screencast →
-                </button>
-              </div>
-            </aside>
+            {sidebar('generate')}
           </div>
         )}
+      </main>
+
+      <main className="stage" hidden={view !== 'environment'}>
+        <div className="stage-toolbar">
+          <div className="stage-heading">
+            Environment setup
+            {running.environment && <span className="muted"> — working…</span>}
+            {running.environment && elapsed('environment')}
+          </div>
+          {cancelButton('environment')}
+        </div>
+        {errors.environment && <div className="banner error">{errors.environment}</div>}
+        {checked && !checked.failed && <div className="banner ok">The preconditions are met. Record when you're ready.</div>}
+        {checked?.failed && checked.files?.some((f) => f.name === 'failure.png') && (
+          <div className="result-path">
+            <span className="muted">The page when the check failed:</span>
+            <button className="btn secondary" onClick={() => showingErrors(() => api.openPath(`${checked.runDir}/failure.png`))}>
+              Open screenshot
+            </button>
+          </div>
+        )}
+        <div className="script-layout">
+          <div className="environment-main">
+            <Instances
+              instances={instances.instances}
+              error={instances.error}
+              busy={anyRunning}
+              onCreate={createInstance}
+              onDdev={ddev}
+              onSetVolumes={setVolumes}
+              onRemove={removeInstance}
+              onOpen={showingErrors}
+              onRefresh={refreshInstances}
+            />
+            <div className={`output-sheet ${outputOpen ? 'open' : ''}`}>
+              <button className="output-sheet-bar" onClick={() => setOutputOpen((o) => !o)} title={outputOpen ? 'Hide the output' : 'Show the output'}>
+                <span className="output-sheet-title">Output</span>
+                {running.environment ? (
+                  <span className="muted">— working…</span>
+                ) : errors.environment ? (
+                  <span className="output-sheet-failed">— failed</span>
+                ) : (
+                  logs.environment.length > 0 && <span className="muted">— finished</span>
+                )}
+                {elapsed('environment')}
+                <span className="output-sheet-toggle">{outputOpen ? '▾' : '▴'}</span>
+              </button>
+              <LogView
+                entries={logs.environment}
+                placeholder="DDEV's output, and the log of the precondition checks, appear here. Check preconditions runs the script only up to where the recording would start."
+              />
+            </div>
+          </div>
+          {sidebar('environment')}
+        </div>
       </main>
 
       <main className="stage" hidden={view !== 'record'}>

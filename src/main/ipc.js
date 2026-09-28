@@ -10,13 +10,18 @@ import { checkScript } from './safety.js'
 import { ENV_NAME, scriptEnvVars } from './script-env.js'
 import { isInputName, scriptInputFiles } from './script-files.js'
 import { Recorder } from './recorder.js'
-import { extractCode, fillTemplate } from './text.js'
+import { Instances, suggestName, templateProblem, volumeProblem, withStatus } from './instances.js'
+import { extractCode, fillTemplate, splitArgs } from './text.js'
 import { isNotFound, spawnInShell, withoutShellNoise } from './shell.js'
 
 export function registerIpc(app, store) {
-  const defaultOutputDir = path.join(app.getPath('videos'), 'quick-demo-creator')
-  const settings = () => effectiveSettings(store.get('settings', {}), defaultOutputDir)
+  const defaultDirs = {
+    outputDir: path.join(app.getPath('videos'), 'quick-demo-creator'),
+    instancesDir: path.join(app.getPath('home'), 'demo-instances')
+  }
+  const settings = () => effectiveSettings(store.get('settings', {}), defaultDirs)
   const recorder = new Recorder(path.join(app.getAppPath(), 'docker', 'recorder'))
+  const instances = new Instances()
   const claudeJobs = {}
 
   const handle = (channel, fn) =>
@@ -52,13 +57,13 @@ export function registerIpc(app, store) {
   }
 
   // --- settings & session -------------------------------------------------
-  handle('settings:get', () => ({ settings: settings(), defaults: { ...DEFAULT_SETTINGS, outputDir: defaultOutputDir } }))
+  handle('settings:get', () => ({ settings: settings(), defaults: { ...DEFAULT_SETTINGS, ...defaultDirs } }))
   handle('settings:set', (patch) => {
     // Only what differs from the defaults is kept, so a better default in a
     // later version still reaches settings the user never changed.
     const saved = { ...store.get('settings', {}), ...patch }
     for (const [key, value] of Object.entries(saved)) {
-      if (value === DEFAULT_SETTINGS[key] || (key === 'outputDir' && value === defaultOutputDir)) delete saved[key]
+      if (value === DEFAULT_SETTINGS[key] || value === defaultDirs[key]) delete saved[key]
     }
     store.set({ settings: saved })
     return settings()
@@ -146,6 +151,10 @@ export function registerIpc(app, store) {
     const err = await shell.openPath(p)
     if (err) throw new Error(err)
   })
+  handle('shell:openExternal', async (url) => {
+    if (!/^https?:\/\//.test(String(url))) throw new Error(`Not a web address: ${url}`)
+    await shell.openExternal(url)
+  })
 
   // --- stage 1: plan ----------------------------------------------------
   handle('plan:start', async ({ prUrl }, event) => {
@@ -192,8 +201,111 @@ export function registerIpc(app, store) {
   handle('script:env', ({ code }) => scriptEnvVars(code))
   handle('script:files', ({ code }) => scriptInputFiles(code))
 
-  // --- stage 3: record --------------------------------------------------
-  handle('record:start', async ({ code, script, prUrl, overrideSafety, env = {}, files = [], audio = '' }, event) => {
+  // --- stage 3: environment ----------------------------------------------
+  // The instances are stored as [{ name, dir, template, mode, volumes }].
+  const storedInstances = () => store.get('instances', [])
+  const saveInstances = (list) => store.set({ instances: list })
+  const findInstance = (name) => {
+    const instance = storedInstances().find((i) => i.name === name)
+    if (!instance) throw new Error(`There is no instance named ${name}.`)
+    return instance
+  }
+
+  // With DDEV's status and URLs; `error` says why DDEV couldn't be asked.
+  handle('instances:list', async () => {
+    let projects = []
+    let error = ''
+    try {
+      projects = await instances.projects(settings())
+    } catch (err) {
+      error = err.message
+    }
+    return { instances: withStatus(storedInstances(), projects), error }
+  })
+  handle('instances:template', (dir) => ({
+    problem: templateProblem(dir),
+    name: suggestName(dir, storedInstances().map((i) => i.name))
+  }))
+  handle('instances:create', async ({ template, name, mode, copyDatabase }, event) => {
+    const s = settings()
+    const emit = emitter(event, 'environment')
+    const instance = await instances.create(s, { template, name, mode }, storedInstances().map((i) => i.name), emit)
+    saveInstances([...storedInstances(), instance])
+    await instances.firstStart(s, instance, copyDatabase, emit)
+  })
+  // `ddev <args>` in the instance's folder; `args` is a string, split like a shell would.
+  handle('instances:ddev', async ({ name, args }, event) => {
+    const argv = Array.isArray(args) ? args.map(String) : splitArgs(String(args || ''))
+    if (!argv.length) throw new Error('Enter a ddev command, such as "restart" or "import-db --file=dump.sql.gz".')
+    await instances.ddev(settings(), findInstance(name), argv, emitter(event, 'environment'))
+  })
+  // Takes effect when the instance is next started (or restarted).
+  handle('instances:setVolumes', ({ name, volumes }) => {
+    const clean = (volumes || []).map((v) => ({
+      source: String(v.source || '').trim(),
+      target: String(v.target || '').trim(),
+      service: String(v.service || '').trim() || 'web',
+      readOnly: !!v.readOnly
+    }))
+    for (const v of clean) {
+      const problem = volumeProblem(v)
+      if (problem) throw new Error(problem)
+    }
+    const instance = { ...findInstance(name), volumes: clean }
+    instances.writeVolumes(instance)
+    saveInstances(storedInstances().map((i) => (i.name === name ? instance : i)))
+  })
+  // Asks first; resolves with whether it was deleted.
+  handle('instances:remove', async ({ name }, event) => {
+    const instance = findInstance(name)
+    const { response } = await dialog.showMessageBox(BrowserWindow.fromWebContents(event.sender), {
+      type: 'warning',
+      buttons: ['Delete', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      message: `Delete the instance ${name}?`,
+      detail: `This deletes the DDEV project ${name} with its database, and ${
+        instance.mode === 'worktree' ? 'the git worktree' : 'the folder'
+      } ${instance.dir} with everything in it, including any changes made there.`
+    })
+    if (response !== 0) return false
+    await instances.remove(settings(), instance, emitter(event, 'environment'))
+    saveInstances(storedInstances().filter((i) => i.name !== name))
+    return true
+  })
+  // Opens the instance's folder in the editor from Settings, or the file manager.
+  handle('instances:edit', async ({ name }) => {
+    const { dir } = findInstance(name)
+    const [exe, ...args] = splitArgs(settings().editorCommand || '')
+    if (!exe) {
+      const err = await shell.openPath(dir)
+      if (err) throw new Error(err)
+      return
+    }
+    await new Promise((resolve, reject) => {
+      const child = spawnInShell(exe, [...args, dir], { stdio: ['ignore', 'ignore', 'pipe'] })
+      let stderr = ''
+      child.stderr.on('data', (d) => (stderr += d))
+      child.on('error', (err) => reject(new Error(`Could not start bash: ${err.message}`)))
+      // An editor may keep running, so give up waiting for it after a moment.
+      const timer = setTimeout(() => {
+        child.stderr.destroy()
+        child.unref()
+        resolve()
+      }, 2000)
+      child.on('close', (code) => {
+        clearTimeout(timer)
+        if (isNotFound(code, stderr)) reject(new Error(`"${exe}" was not found, even with your login shell's PATH. Set the editor in Settings.`))
+        else if (code) reject(new Error(withoutShellNoise(stderr).trim() || `${exe} exited with code ${code}.`))
+        else resolve()
+      })
+    })
+  })
+
+  // --- stage 4: record --------------------------------------------------
+  // Records the script, or with `checkOnly` runs only its precondition checks
+  // (see the Environment stage).
+  async function runScript({ code, script, prUrl, overrideSafety, env = {}, files = [], audio = '' }, event, checkOnly) {
     // Checked again here so the renderer can't skip it.
     const safety = checkScript(code)
     if (!safety.ok && !overrideSafety) {
@@ -206,7 +318,7 @@ export function registerIpc(app, store) {
     const vars = scriptEnvVars(code)
     const values = Object.fromEntries(vars.map((v) => [v.name, String(env[v.name] ?? '')]))
     const targets = vars.map((v) => values[v.name].trim() || v.fallback)
-    const emit = emitter(event, 'record')
+    const emit = emitter(event, checkOnly ? 'environment' : 'record')
     const present = files.filter((f) => isInputName(f.name) && fs.existsSync(String(f.path || '')))
     for (const f of files) {
       if (!present.includes(f)) emit({ type: 'stderr', text: `Leaving out ${f.name}: ${f.path} no longer exists.\n` })
@@ -215,17 +327,21 @@ export function registerIpc(app, store) {
     if (missing.length) {
       emit({ type: 'stderr', text: `The script reads ${missing.map((n) => `/input/${n}`).join(', ')}, but no file was added for ${missing.length > 1 ? 'them' : 'it'}.\n` })
     }
-    if (audio && !s.convertToMp4) {
+    if (checkOnly) {
+      audio = ''
+    } else if (audio && !s.convertToMp4) {
       emit({ type: 'stderr', text: 'Leaving out the background audio: it is only added to the MP4, and Convert to MP4 is off in Settings.\n' })
       audio = ''
     } else if (audio && !fs.existsSync(audio)) {
       emit({ type: 'stderr', text: `Leaving out the background audio: ${audio} no longer exists.\n` })
       audio = ''
     }
-    const result = await recorder.record({ settings: s, code, script, name, env: values, files: present, targets, audio, onEvent: emit })
-    if (s.openFolderWhenDone) shell.openPath(result.runDir)
+    const result = await recorder.record({ settings: s, code, script, name, env: values, files: present, targets, audio, checkOnly, onEvent: emit })
+    if (!checkOnly && s.openFolderWhenDone) shell.openPath(result.runDir)
     return result
-  })
+  }
+  handle('record:start', (arg, event) => runScript(arg, event, false))
+  handle('precheck:start', (arg, event) => runScript(arg, event, true))
 
   handle('image:build', async (_arg, event) => {
     recorder.cancelled = false
@@ -234,6 +350,10 @@ export function registerIpc(app, store) {
 
   handle('job:cancel', (stage) => {
     if (stage === 'record' || stage === 'image') recorder.cancel(settings())
-    else claudeJobs[stage]?.cancel()
+    else if (stage === 'environment') {
+      // A DDEV command, or a precondition check in the recorder.
+      instances.cancel()
+      recorder.cancel(settings())
+    } else claudeJobs[stage]?.cancel()
   })
 }

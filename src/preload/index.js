@@ -23,6 +23,7 @@ const api = {
   // not wrapped like the calls above.
   pathForFile: (file) => webUtils.getPathForFile(file),
   openPath: (path) => call('shell:openPath', path),
+  openExternal: (url) => call('shell:openExternal', url),
 
   // stages
   plan: (prUrl) => call('plan:start', { prUrl }),
@@ -34,6 +35,14 @@ const api = {
   setProjectFiles: (prUrl, files) => call('projectFiles:set', { prUrl, files }),
   getProjectEnv: (prUrl) => call('projectEnv:get', prUrl),
   setProjectEnv: (prUrl, values) => call('projectEnv:set', { prUrl, values }),
+  listInstances: () => call('instances:list'),
+  checkTemplate: (dir) => call('instances:template', dir),
+  createInstance: (args) => call('instances:create', args),
+  ddev: (name, args) => call('instances:ddev', { name, args }),
+  setVolumes: (name, volumes) => call('instances:setVolumes', { name, volumes }),
+  removeInstance: (name) => call('instances:remove', { name }),
+  editInstance: (name) => call('instances:edit', { name }),
+  checkPreconditions: (args) => call('precheck:start', args),
   record: (args) => call('record:start', args),
   buildImage: () => call('image:build'),
   cancel: (stage) => call('job:cancel', stage),

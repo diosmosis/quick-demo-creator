@@ -20,7 +20,7 @@ export const DEFAULT_PLANNING_INSTRUCTIONS =
   'Reply with the finished script as your final message, with nothing before or after it: it is shown ' +
   'to the user in an editor exactly as you write it. Do not write any files.'
 
-// Appended to the recording prompt. Claude can't know how stage 3 runs the
+// Appended to the recording prompt. Claude can't know how stage 4 runs the
 // script, so without this it guesses at paths, packages and browser flags.
 // {DEMO_API} becomes the reference of the recorder image's demo-kit library
 // (docker/recorder/demo-kit.md), so it always describes the installed version.
@@ -62,18 +62,27 @@ export const DEFAULT_SETTINGS = {
   dockerRunArgs: '--network host',
   convertToMp4: true,
   outputDir: '',
-  openFolderWhenDone: true
+  openFolderWhenDone: true,
+
+  ddevPath: 'ddev',
+  // Where the Environment stage's copies of DDEV projects go; '' for a folder
+  // in the home directory (see ipc.js).
+  instancesDir: '',
+  // Opens an instance's folder, e.g. `code` or `phpstorm`; '' for the file manager.
+  editorCommand: ''
 }
 
 const PROMPT_KEYS = ['planningPrompt', 'recordingPrompt']
 
 // The settings as the app should use them: defaults filled in, blank prompts
-// restored.
-export function effectiveSettings(saved, fallbackOutputDir) {
+// restored, and blank folders set to `fallbacks` ({ outputDir, instancesDir }).
+export function effectiveSettings(saved, fallbacks) {
   const s = { ...DEFAULT_SETTINGS, ...saved }
   for (const key of PROMPT_KEYS) {
     if (!String(s[key] || '').trim()) s[key] = DEFAULT_SETTINGS[key]
   }
-  if (!String(s.outputDir || '').trim()) s.outputDir = fallbackOutputDir
+  for (const key of ['outputDir', 'instancesDir']) {
+    if (!String(s[key] || '').trim()) s[key] = fallbacks[key]
+  }
   return s
 }

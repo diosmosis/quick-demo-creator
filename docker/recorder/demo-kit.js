@@ -16,6 +16,21 @@ export const OUTPUT_VIDEO = '/output/demo.webm'
 const FAILURE_SCREENSHOT = '/output/failure.png'
 const OVERLAY_KEY = '__demoKit'
 
+// Thrown by startRecording() in a check-only run (the app's "Check
+// preconditions", which sets DEMO_CHECK_ONLY=1): everything before the
+// recording starts is the script's precondition checks, and they passed.
+// A script that leaves recording to start at its first page load doesn't
+// check anything first, so that only shows the app answers.
+class ChecksPassed extends Error {
+  constructor(autoStart) {
+    super(
+      autoStart
+        ? "The first page loaded. This is a check-only run, and the script doesn't check its preconditions first (it doesn't pass autoStart: false to record()), so that is all it checked."
+        : 'The preconditions are met. This is a check-only run, so it stops here, where the recording would start.'
+    )
+  }
+}
+
 // How long a viewer needs to read `text`: a second per four words, and at
 // least two seconds.
 export function readingTime(text) {
@@ -38,7 +53,8 @@ export function zoomedBox(box, viewport, scale, margin = 40) {
 // Launches the browser, runs `script(demo)` and saves the screencast to
 // /output/demo.webm. Recording starts when the first demo.goto() has loaded,
 // or at demo.startRecording(). A failing script is logged, screenshotted and
-// makes the process exit non-zero, but the recording is still saved.
+// makes the process exit non-zero, but the recording is still saved. With
+// DEMO_CHECK_ONLY=1 the run ends, successfully, where the recording would start.
 export async function record(script, options = {}) {
   const { viewport = { width: 1920, height: 1080 }, launch = {}, ...demoOptions } = options
   const startedAt = Date.now()
@@ -56,7 +72,7 @@ export async function record(script, options = {}) {
   let demo
   try {
     const [page = await browser.newPage()] = await browser.pages()
-    demo = new Demo(browser, page, { ...demoOptions, startedAt })
+    demo = new Demo(browser, page, { ...demoOptions, checkOnly: process.env.DEMO_CHECK_ONLY === '1', startedAt })
     await demo.setup()
     try {
       await script(demo)
@@ -64,6 +80,10 @@ export async function record(script, options = {}) {
       log(`The script finished after ${demo.sceneCount} ${demo.sceneCount === 1 ? 'scene' : 'scenes'}.`)
       await demo.pause(1500)
     } catch (err) {
+      if (err instanceof ChecksPassed) {
+        log(err.message)
+        return
+      }
       process.exitCode = 1
       console.error(stamp(startedAt, `Demo failed${demo.step ? ` during: ${demo.step}` : ''}`))
       console.error(`${err?.stack || err}`)
@@ -83,12 +103,12 @@ export async function record(script, options = {}) {
 // The handle a script drives the demo with. Targets are a Puppeteer selector
 // (CSS, or `::-p-text(...)`, `::-p-aria(...)`, ...) or an ElementHandle.
 export class Demo {
-  constructor(browser, page, { autoStart = true, pace = 1, actionPause = 600, output = OUTPUT_VIDEO, startedAt = Date.now() } = {}) {
+  constructor(browser, page, { autoStart = true, pace = 1, actionPause = 600, output = OUTPUT_VIDEO, checkOnly = false, startedAt = Date.now() } = {}) {
     this.browser = browser
     this.page = page
     this.recording = false
-    this.options = { autoStart, pace, actionPause, output }
-    this.state = { title: '', subtitle: '', cursor: null }
+    this.options = { autoStart, pace, actionPause, output, checkOnly }
+    this.state = { title: '', subtitle: '', cursor: null, css: '' }
     this.recorder = null
     this.recordingStartedAt = 0
     this.initScript = null
@@ -166,6 +186,7 @@ export class Demo {
 
   async startRecording() {
     if (this.recording) return
+    if (this.options.checkOnly) throw new ChecksPassed(this.options.autoStart)
     this.recorder = await this.page.screencast({ path: this.options.output })
     this.recording = true
     this.recordingStartedAt = Date.now()
@@ -273,6 +294,7 @@ export class Demo {
   async click(target, { navigation = false, highlight = false, timeout = 60000 } = {}) {
     this.action(`click ${describe(target)}${navigation ? ' and wait for the next page' : ''}`)
     const el = await this.find(target)
+    await this.uncovered(el, target)
     await this.moveTo(el)
     if (highlight) {
       await this.ring(el, 1500)
@@ -294,6 +316,7 @@ export class Demo {
     const length = String(text).length
     this.action(`type ${length} ${length === 1 ? 'character' : 'characters'} into ${describe(target)}${enter ? ', then Enter' : ''}`)
     const el = await this.find(target)
+    await this.uncovered(el, target)
     await this.moveTo(el)
     await el.click()
     if (clear && (await el.evaluate((node) => ('value' in node ? node.value : node.textContent) !== ''))) {
@@ -320,6 +343,7 @@ export class Demo {
   async select(target, ...values) {
     this.action(`select ${values.map((v) => `"${v}"`).join(', ')} in ${describe(target)}`)
     const el = await this.find(target)
+    await this.uncovered(el, target)
     await this.moveTo(el)
     const option = values.length === 1 ? await this.drawOptions(el, values[0]) : null
     if (option) {
@@ -362,6 +386,7 @@ export class Demo {
       await this.pause(800)
       return
     }
+    await this.uncovered(el, target)
     await this.evaluateOverlay((key) => window[key]?.pulse())
     await el.click()
     await this.pause(this.options.actionPause)
@@ -549,6 +574,20 @@ export class Demo {
     await this.update({ badge: text || '' })
   }
 
+  // Adds `css` to every page from now on, e.g. to hide a notice that has
+  // nothing to do with the demo. It comes after the page's own styles, so a
+  // rule as specific as the page's wins.
+  async addStyle(css) {
+    this.action('add a style')
+    await this.update({ css: `${this.state.css}${css}\n` })
+  }
+
+  // Removes every style addStyle() added.
+  async clearStyles() {
+    this.action('clear the added styles')
+    await this.update({ css: '' })
+  }
+
   // Keeps the browser's cookies (who is signed in) under `name`, for
   // useSession(). Signing each user in off camera and switching between them
   // shows several users in one recording.
@@ -611,6 +650,36 @@ export class Demo {
     return this.page.evaluate((key, box, options, mark) => window[key]?.options(box, options, mark), OVERLAY_KEY, list.box, list.options, mark ?? null).catch(() => null)
   }
 
+  // Waits until a click on the element would reach it, rather than whatever
+  // is on top of it (a dialog, a loading overlay, a sticky header), which
+  // would take the click or the typing instead and leave the script to fail
+  // later with no sign why. Fails after `timeout`, naming what is in the way.
+  async uncovered(el, target, { timeout = 10000 } = {}) {
+    const started = Date.now()
+    let logged = started
+    let scrolled = false
+    for (;;) {
+      const cover = await el.evaluate(coverOf)
+      if (!cover) return
+      // What is fixed to the top or bottom of the screen, such as a sticky
+      // header, is out of the way of the middle.
+      if (!scrolled) {
+        scrolled = true
+        await el.evaluate((node) => node.scrollIntoView({ block: 'center', behavior: 'smooth' }))
+        await sleep(600)
+        continue
+      }
+      if (Date.now() - started > timeout) {
+        throw new Error(`Could not reach ${describe(target)}: ${cover}, so a click would go there instead.`)
+      }
+      if (Date.now() - logged >= 5000) {
+        logged = Date.now()
+        this.log(`    still waiting for ${describe(target)} to be uncovered: ${cover} (${seconds(Date.now() - started)} of ${seconds(timeout)})…`)
+      }
+      await sleep(250)
+    }
+  }
+
   // Polls for the first element matching `selector` whose text contains `text`.
   async findWithText(selector, text, { visible, timeout }) {
     const deadline = Date.now() + timeout
@@ -670,6 +739,40 @@ export class Demo {
   async evaluateOverlay(fn, ...args) {
     await this.page.evaluate(fn, OVERLAY_KEY, ...args).catch(() => {})
   }
+}
+
+// Runs in the page: null if a click on `node` (at the middle of its part on
+// the screen, where Puppeteer clicks) reaches it, or else what is in the way.
+function coverOf(node) {
+  const name = (el) => {
+    let text = el.tagName.toLowerCase()
+    if (el.id) text += `#${el.id}`
+    for (const c of [...el.classList].slice(0, 3)) text += `.${c}`
+    const words = (el.innerText || '').trim().replace(/\s+/g, ' ')
+    return words ? `${text} ("${words.length > 40 ? `${words.slice(0, 40)}…` : words}")` : text
+  }
+  const box = node.getBoundingClientRect()
+  const left = Math.max(box.left, 0)
+  const top = Math.max(box.top, 0)
+  const right = Math.min(box.right, innerWidth)
+  const bottom = Math.min(box.bottom, innerHeight)
+  if (right <= left || bottom <= top) return 'it is not on the screen'
+  const x = (left + right) / 2
+  const y = (top + bottom) / 2
+  // Into shadow roots, whose hosts stand in for what is inside them.
+  let hit = document.elementFromPoint(x, y)
+  while (hit?.shadowRoot) {
+    const inner = hit.shadowRoot.elementFromPoint(x, y)
+    if (!inner || inner === hit) break
+    hit = inner
+  }
+  if (!hit) return 'nothing is at its middle'
+  if (hit === node || node.contains(hit)) return null
+  // A label clicks its control, as custom-styled checkboxes rely on.
+  if (hit.closest('label')?.control === node) return null
+  // An element that ignores the mouse is clicked through to what is under it.
+  if (getComputedStyle(node).pointerEvents === 'none' && hit.contains(node)) return null
+  return `it is covered by ${name(hit)}`
 }
 
 function describe(target) {
@@ -789,6 +892,9 @@ function overlay(key, state) {
   arrow.setAttribute('stroke-width', '1.5')
   svg.append(arrow)
   shadow.append(style, badge, title, subtitle, ring, svg)
+  // addStyle()'s CSS, which is for the page, so outside the shadow root.
+  const pageStyle = document.createElement('style')
+  pageStyle.setAttribute('data-demo-kit', '')
 
   let current = {}
   let ringTimer = 0
@@ -817,6 +923,7 @@ function overlay(key, state) {
     show(title, next.title)
     show(subtitle, next.subtitle)
     show(badge, next.badge)
+    if (pageStyle.textContent !== (next.css || '')) pageStyle.textContent = next.css || ''
     if (next.cursor) {
       // A new page shows the cursor where it was; only moves glide.
       svg.classList.toggle('still', !current.cursor)
@@ -826,7 +933,7 @@ function overlay(key, state) {
     current = next
   }
 
-  // Keeps the host attached to <html>, observing <html> itself (the host
+  // Keeps the host and the page's style attached to <html>, observing <html> itself (the host
   // being removed) and the document (<html> being replaced).
   const observer = new MutationObserver(() => ensure())
   let watched = null
@@ -834,6 +941,7 @@ function overlay(key, state) {
     const root = document.documentElement
     if (!root) return
     if (host.parentNode !== root) root.appendChild(host)
+    if (pageStyle.parentNode !== root) root.appendChild(pageStyle)
     if (root !== watched) {
       watched = root
       observer.observe(root, { childList: true })

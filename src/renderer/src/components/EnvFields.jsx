@@ -1,8 +1,9 @@
 import React from 'react'
 
 // A field for each environment variable the script reads. `values` are the
-// ones remembered for `project`.
-export default function EnvFields({ vars, values, project, onChange }) {
+// ones remembered for `project`. `suggestions` (the running instances' URLs)
+// are offered in every field, from a <datalist> with the id `listId`.
+export default function EnvFields({ vars, values, project, suggestions = [], listId, onChange }) {
   return (
     <div className="side-body">
       <p className="hint">
@@ -18,10 +19,18 @@ export default function EnvFields({ vars, values, project, onChange }) {
             placeholder={v.fallback || v.computed || '(no default)'}
             title={v.computed ? `Left blank, the script computes it: ${v.computed}` : undefined}
             onChange={(e) => onChange(v.name, e.target.value)}
+            list={suggestions.length ? listId : undefined}
             spellCheck={false}
           />
         </label>
       ))}
+      {suggestions.length > 0 && (
+        <datalist id={listId}>
+          {suggestions.map((url) => (
+            <option key={url} value={url} />
+          ))}
+        </datalist>
+      )}
     </div>
   )
 }

@@ -824,3 +824,196 @@ select:focus,
 .modal-body .hint + .checkbox {
   margin-top: 14px;
 }
+
+.banner.ok {
+  color: var(--green);
+  background: rgba(63, 185, 80, 0.08);
+  border: 1px solid rgba(63, 185, 80, 0.4);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+}
+
+/* ---- stage 3: environment -------------------------------------------- */
+.environment-main {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* Room below the last instance for the output's bar. */
+.environment-main .instances {
+  flex: 1;
+  padding-bottom: 46px;
+}
+/* The output: a bar at the bottom, sliding up over the instances when open. */
+.output-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 36px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  transition: height 0.2s ease;
+  z-index: 2;
+}
+.output-sheet.open {
+  height: 55%;
+}
+.output-sheet-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+.output-sheet-bar:hover {
+  background: var(--bg-3);
+}
+.output-sheet-title {
+  font-weight: 600;
+}
+.output-sheet-failed {
+  color: var(--red);
+}
+.output-sheet-toggle {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 14px;
+}
+.output-sheet .log {
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+}
+.instances {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.instances > p {
+  margin: 0;
+}
+.instance-new,
+.instance {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.instance-new .hint {
+  margin: 0;
+}
+.instance-new .row > input[type='text'] {
+  flex: 1;
+}
+.instance-new-options {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.instance-new-options .btn {
+  margin-left: auto;
+}
+.inline-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.inline-field input[type='text'] {
+  width: 220px;
+}
+.instance-new-options .checkbox {
+  margin: 0;
+}
+.instances-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.instances-head .link-btn {
+  margin-left: auto;
+}
+.instance-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.instance-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.instance-actions .btn {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex: none;
+}
+.status-dot.on {
+  background: var(--green);
+}
+.status-dot.bad {
+  background: var(--red);
+}
+.instance-paths {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.instance-command {
+  align-items: center;
+}
+.instance-command input[type='text'] {
+  flex: 1;
+}
+.instance-volumes-toggle {
+  align-self: flex-start;
+}
+.volumes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.volumes .hint {
+  margin: 0;
+}
+.volume {
+  align-items: center;
+}
+.volume input[type='text'] {
+  flex: 1;
+  min-width: 0;
+}
+.volume input.volume-service {
+  flex: none;
+  width: 70px;
+}
+.volume .checkbox {
+  margin: 0;
+  white-space: nowrap;
+}

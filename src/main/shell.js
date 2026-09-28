@@ -51,3 +51,37 @@ export function killTree(child, signal = 'SIGTERM') {
 export function notFoundMessage(exe, setting) {
   return `"${exe}" was not found, even with your login shell's PATH. Set the ${setting} in Settings, as an absolute path if need be.`
 }
+
+// Runs a command, streaming each output line to `onLine`. Resolves with the
+// exit code and everything it printed; `onSpawn` receives the child so the
+// caller can cancel it. `setting` names the setting that holds the executable,
+// for the error when it isn't found.
+export function runCommand(cmd, args, { onLine = () => {}, onSpawn = () => {}, cwd, setting = 'executable' } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawnInShell(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], cwd })
+    onSpawn(child)
+    let captured = ''
+    const pipe = (stream, kind) => {
+      let buf = ''
+      stream.setEncoding('utf8')
+      const emit = (line) => {
+        if (SHELL_NOISE.test(line)) return
+        captured += line + '\n'
+        onLine(line, kind)
+      }
+      stream.on('data', (chunk) => {
+        buf += chunk
+        const lines = buf.split(/\r?\n|\r/)
+        buf = lines.pop()
+        lines.forEach(emit)
+      })
+      stream.on('end', () => buf && emit(buf))
+    }
+    pipe(child.stdout, 'stdout')
+    pipe(child.stderr, 'stderr')
+    child.on('error', (err) => reject(new Error(`Could not start bash to run ${cmd}: ${err.message}`)))
+    child.on('close', (code) =>
+      isNotFound(code, captured) ? reject(new Error(notFoundMessage(cmd, setting))) : resolve({ code, output: captured })
+    )
+  })
+}

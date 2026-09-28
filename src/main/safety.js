@@ -3,7 +3,7 @@
 // This is a tripwire, not a sandbox: it looks for the things a recording
 // script has no business doing (spawning processes, opening sockets, touching
 // files outside /output, running obfuscated code) and reports them. The
-// container stage 3 runs in is the actual containment.
+// container stage 4 runs in is the actual containment.
 //
 // Findings are 'danger' (recording is blocked until the user overrides it) or
 // 'warning' (shown, doesn't block).
