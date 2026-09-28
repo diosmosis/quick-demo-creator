@@ -30,7 +30,10 @@ browser recording.
    sidebar on the right has two tabs: a field for each environment variable
    the script reads (see _Environment variables_), and the files it needs
    (see _Input files_).
-3. **Record.** Click _Record screencast_. The script runs in the recorder
+3. **Record.** Optionally choose a _Background audio_ file under the sidebar
+   first: it is looped for the whole length of the MP4, fading out over its
+   last two seconds (the WebM stays silent, and nothing is added with _Convert
+   to MP4_ off). Click _Record screencast_. The script runs in the recorder
    container, and its output streams in with a running timer. When it finishes,
    the output folder opens on your desktop.
 
@@ -74,7 +77,7 @@ Everything is configurable from the ⚙ button:
 | Docker executable / image name | `docker` / `quick-demo-creator-recorder` | |
 | Extra `docker run` arguments | `--network host` | Lets the script reach apps served on this machine (`localhost`, `*.ddev.site`). On rootful Docker that's all it takes. On rootless Docker or Docker Desktop, "host" is not this machine; the recording log says what to do instead. |
 | Output folder | `~/Videos/quick-demo-creator` | Each recording gets its own subfolder with the video, the Puppeteer script and the video script. |
-| Convert to MP4 | on | `page.screencast()` records WebM; the MP4 plays in more places. |
+| Convert to MP4 | on | `page.screencast()` records WebM; the MP4 plays in more places. The background audio is only added to the MP4. |
 
 ### Prompts
 

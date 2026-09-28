@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { fileURLToPath } from 'node:url'
-import { Recorder, envArgs, inputArgs, networkNotes } from '../src/main/recorder.js'
+import { Recorder, audioArgs, envArgs, inputArgs, networkNotes } from '../src/main/recorder.js'
 import { DEFAULT_RECORDING_ENVIRONMENT } from '../src/main/defaults.js'
 import { fillTemplate } from '../src/main/text.js'
 
@@ -35,6 +35,21 @@ test('test_inputArgs_should_mount_each_file_read_only_in_the_input_directory', (
       '--workdir', '/input'
     ]
   )
+})
+
+test('test_audioArgs_should_mount_the_file_read_only_under_a_fixed_name', () => {
+  assert.deepEqual(audioArgs('/home/me/Music/Theme.MP3'), [
+    '--mount', 'type=bind,source=/home/me/Music/Theme.MP3,target=/audio/background.mp3,readonly',
+    '-e', 'AUDIO=/audio/background.mp3'
+  ])
+  assert.deepEqual(audioArgs('/home/me/"odd",dir/track.$(rm -rf ~)'), [
+    '--mount', 'type=bind,"source=/home/me/""odd"",dir/track.$(rm -rf ~)",target=/audio/background,readonly',
+    '-e', 'AUDIO=/audio/background'
+  ])
+})
+
+test('test_audioArgs_should_add_nothing_without_a_file', () => {
+  assert.deepEqual(audioArgs(''), [])
 })
 
 test('test_networkNotes_should_say_nothing_for_rootful_docker_on_the_host_network', () => {

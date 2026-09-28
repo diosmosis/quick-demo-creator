@@ -527,6 +527,15 @@ code {
 .side-actions .hint {
   margin: 0;
 }
+.audio-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.audio-pick .files-head > span:first-child {
+  flex: 1;
+}
 .env-field {
   display: flex;
   flex-direction: column;

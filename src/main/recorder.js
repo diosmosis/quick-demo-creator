@@ -9,6 +9,7 @@ import { INPUT_DIR, isInputName } from './script-files.js'
 import { SHELL_NOISE, isNotFound, killTree, notFoundMessage, spawnInShell } from './shell.js'
 
 const HASH_LABEL = 'quick-demo-creator.context-hash'
+const AUDIO_DIR = '/audio'
 
 // Hash of the image's build context, so an edited Dockerfile triggers a rebuild.
 function contextHash(dir) {
@@ -114,8 +115,9 @@ export class Recorder {
   // Records `code` into a new folder under settings.outputDir. Resolves with
   // the folder and the files the run produced. `env` is passed into the
   // container; `files` ([{ name, path }]) are mounted read-only in /input;
-  // `targets` are the URLs the script will visit, for the notes.
-  async record({ settings, code, script, name, env = {}, files = [], targets = [], onEvent }) {
+  // `targets` are the URLs the script will visit, for the notes; `audio` is a
+  // file on this machine looped under the MP4, or '' for none.
+  async record({ settings, code, script, name, env = {}, files = [], targets = [], audio = '', onEvent }) {
     this.cancelled = false
     await this.ensureImage(settings, onEvent)
     if (this.cancelled) throw new Error('Cancelled.')
@@ -143,6 +145,7 @@ export class Recorder {
       ...envArgs(env),
       ...inputArgs(files),
       '-e', `CONVERT_MP4=${settings.convertToMp4 ? 1 : 0}`,
+      ...(settings.convertToMp4 ? audioArgs(audio) : []),
       '-v', `${runDir}:/output`,
       '-v', `${scriptPath}:/app/${scriptName}:ro`,
       ...runArgs,
@@ -187,15 +190,27 @@ export function envArgs(env) {
 }
 
 // A read-only bind mount at /input/<name> for each file, and /input as the
-// working directory so the script can also use relative paths. --mount rather
-// than -v, which can't take a path containing a colon; its value is CSV, so
-// fields are quoted.
+// working directory so the script can also use relative paths.
 export function inputArgs(files) {
-  const csv = (field) => (/[",]/.test(field) ? `"${field.replace(/"/g, '""')}"` : field)
-  const mounts = files
-    .filter((f) => isInputName(f.name) && f.path)
-    .flatMap((f) => ['--mount', ['type=bind', `source=${f.path}`, `target=${INPUT_DIR}/${f.name}`, 'readonly'].map(csv).join(',')])
+  const mounts = files.filter((f) => isInputName(f.name) && f.path).flatMap((f) => readOnlyMount(f.path, `${INPUT_DIR}/${f.name}`))
   return [...mounts, '--workdir', INPUT_DIR]
+}
+
+// A read-only bind mount of the background audio, and AUDIO naming it for
+// run.sh, which loops it under the MP4. Mounted under a fixed name, keeping
+// only a plain extension, so nothing in the host's file name reaches the shell.
+export function audioArgs(file) {
+  if (!file) return []
+  const ext = path.extname(file).toLowerCase()
+  const target = `${AUDIO_DIR}/background${/^\.[a-z0-9]{1,5}$/.test(ext) ? ext : ''}`
+  return [...readOnlyMount(file, target), '-e', `AUDIO=${target}`]
+}
+
+// --mount rather than -v, which can't take a path containing a colon; its
+// value is CSV, so fields are quoted.
+function readOnlyMount(source, target) {
+  const csv = (field) => (/[",]/.test(field) ? `"${field.replace(/"/g, '""')}"` : field)
+  return ['--mount', ['type=bind', `source=${source}`, `target=${target}`, 'readonly'].map(csv).join(',')]
 }
 
 // Warnings about URLs on this machine that the container won't reach.

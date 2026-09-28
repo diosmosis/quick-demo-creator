@@ -131,6 +131,17 @@ export function registerIpc(app, store) {
     const res = await dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'] })
     return res.canceled ? [] : res.filePaths
   })
+  handle('dialog:selectAudio', async (_arg, event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const res = await dialog.showOpenDialog(win, {
+      properties: ['openFile'],
+      filters: [
+        { name: 'Audio', extensions: ['mp3', 'm4a', 'aac', 'wav', 'ogg', 'oga', 'opus', 'flac'] },
+        { name: 'All files', extensions: ['*'] }
+      ]
+    })
+    return res.canceled ? null : res.filePaths[0]
+  })
   handle('shell:openPath', async (p) => {
     const err = await shell.openPath(p)
     if (err) throw new Error(err)
@@ -182,7 +193,7 @@ export function registerIpc(app, store) {
   handle('script:files', ({ code }) => scriptInputFiles(code))
 
   // --- stage 3: record --------------------------------------------------
-  handle('record:start', async ({ code, script, prUrl, overrideSafety, env = {}, files = [] }, event) => {
+  handle('record:start', async ({ code, script, prUrl, overrideSafety, env = {}, files = [], audio = '' }, event) => {
     // Checked again here so the renderer can't skip it.
     const safety = checkScript(code)
     if (!safety.ok && !overrideSafety) {
@@ -204,7 +215,14 @@ export function registerIpc(app, store) {
     if (missing.length) {
       emit({ type: 'stderr', text: `The script reads ${missing.map((n) => `/input/${n}`).join(', ')}, but no file was added for ${missing.length > 1 ? 'them' : 'it'}.\n` })
     }
-    const result = await recorder.record({ settings: s, code, script, name, env: values, files: present, targets, onEvent: emit })
+    if (audio && !s.convertToMp4) {
+      emit({ type: 'stderr', text: 'Leaving out the background audio: it is only added to the MP4, and Convert to MP4 is off in Settings.\n' })
+      audio = ''
+    } else if (audio && !fs.existsSync(audio)) {
+      emit({ type: 'stderr', text: `Leaving out the background audio: ${audio} no longer exists.\n` })
+      audio = ''
+    }
+    const result = await recorder.record({ settings: s, code, script, name, env: values, files: present, targets, audio, onEvent: emit })
     if (s.openFolderWhenDone) shell.openPath(result.runDir)
     return result
   })

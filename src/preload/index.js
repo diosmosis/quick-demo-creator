@@ -18,6 +18,7 @@ const api = {
   toolVersion: (path) => call('tools:version', { path }),
   selectFolder: () => call('dialog:selectFolder'),
   selectFiles: () => call('dialog:selectFiles'),
+  selectAudio: () => call('dialog:selectAudio'),
   // The path of a file dropped on the page. Synchronous and local, so it is
   // not wrapped like the calls above.
   pathForFile: (file) => webUtils.getPathForFile(file),

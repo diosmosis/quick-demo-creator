@@ -45,6 +45,8 @@ export default function App() {
   // The /input files the script names, and the files added for this repository.
   const [requiredFiles, setRequiredFiles] = useState([])
   const [projectFiles, setProjectFiles] = useState([])
+  // A file looped under the MP4 as its soundtrack; '' for none.
+  const [audio, setAudio] = useState('')
   const [loaded, setLoaded] = useState(false)
 
   const [running, setRunning] = useState({})
@@ -64,6 +66,7 @@ export default function App() {
       setPrTitle(s.prTitle || '')
       setScript(s.script || '')
       setCode(s.code || '')
+      setAudio(s.audio || '')
       if (s.code) api.checkSafety(s.code).then(setSafety)
       setView(s.code ? 'generate' : 'plan')
       setLoaded(true)
@@ -86,9 +89,9 @@ export default function App() {
 
   useEffect(() => {
     if (!loaded) return
-    const t = setTimeout(() => api.saveSession({ prUrl, prTitle, script, code }), 400)
+    const t = setTimeout(() => api.saveSession({ prUrl, prTitle, script, code, audio }), 400)
     return () => clearTimeout(t)
-  }, [loaded, prUrl, prTitle, script, code])
+  }, [loaded, prUrl, prTitle, script, code, audio])
 
   // Re-check the script as the user edits it.
   const edited = useRef(false)
@@ -174,7 +177,7 @@ export default function App() {
   const record = () =>
     runStage('record', async () => {
       setRecording(null)
-      setRecording(await api.record({ code, script, prUrl, overrideSafety: !blocked, env: projectEnv.values, files: projectFiles }))
+      setRecording(await api.record({ code, script, prUrl, overrideSafety: !blocked, env: projectEnv.values, files: projectFiles, audio }))
     })
 
   const rebuildImage = () => {
@@ -183,6 +186,11 @@ export default function App() {
       setRecording(null)
       await api.buildImage()
     })
+  }
+
+  const chooseAudio = async () => {
+    const path = await api.selectAudio()
+    if (path) setAudio(path)
   }
 
   const saveSettings = async (form) => {
@@ -359,6 +367,31 @@ export default function App() {
                 <InputFiles required={requiredFiles} files={projectFiles} onChange={changeFiles} />
               )}
               <div className="side-actions">
+                <div className="audio-pick">
+                  <div className="files-head">
+                    <span>Background audio</span>
+                    <span className="files-actions">
+                      <button className="link-btn" onClick={chooseAudio}>
+                        {audio ? 'Change…' : 'Choose…'}
+                      </button>
+                      {audio && (
+                        <button className="link-btn" onClick={() => setAudio('')}>
+                          Remove
+                        </button>
+                      )}
+                    </span>
+                  </div>
+                  {audio ? (
+                    <span className="files-path" title={audio}>
+                      {audio.split(/[\\/]/).pop()}
+                    </span>
+                  ) : (
+                    <span className="hint">None. A file chosen here is looped under the MP4 for its whole length.</span>
+                  )}
+                  {audio && config && !config.settings.convertToMp4 && (
+                    <span className="files-path missing">Only added to the MP4: turn on Convert to MP4 in Settings.</span>
+                  )}
+                </div>
                 {blocked && <p className="hint">Dismiss the safety check's red findings once you've reviewed them.</p>}
                 <button className="btn" onClick={record} disabled={!code.trim() || anyRunning || blocked}>
                   Record screencast →
