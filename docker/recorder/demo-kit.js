@@ -607,6 +607,9 @@ export class Demo {
   async useSession(name) {
     this.action(name == null ? 'clear the cookies' : `use the session "${name}"`)
     if (name != null && !this.sessions[name]) throw new Error(`No session was saved as "${name}".`)
+    // Leave the page first: requests it still has in flight could set the old
+    // cookies again (Matomo refreshes its session cookie on every request).
+    await this.page.goto('about:blank')
     const cdp = await this.cdp()
     await cdp.send('Network.clearBrowserCookies')
     if (name != null && this.sessions[name].length) await cdp.send('Network.setCookies', { cookies: this.sessions[name] })

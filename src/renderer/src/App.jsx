@@ -381,9 +381,15 @@ export default function App() {
             Check preconditions
           </button>
         )}
-        <button className="btn" onClick={record} disabled={!code.trim() || anyRunning || blocked}>
-          Record screencast →
-        </button>
+        {stage === 'generate' ? (
+          <button className="btn" onClick={() => setView('environment')} disabled={!code.trim()}>
+            Setup Environment →
+          </button>
+        ) : (
+          <button className="btn" onClick={record} disabled={!code.trim() || anyRunning || blocked}>
+            Record screencast →
+          </button>
+        )}
       </div>
     </aside>
   )
